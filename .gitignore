@@ -1,0 +1,15 @@
+# 个人工作约定,不纳入版本管理
+AGENTS.local.md
+
+# macOS
+.DS_Store
+
+# 依赖与构建产物
+node_modules/
+dist/
+.next/
+.nuxt/
+.output/
+.env
+.env.*
+!.env.example
