@@ -1904,3 +1904,86 @@ Multi-Agent
 都只是给这个 Loop 增加新的输入、能力和执行方式。
 
 **因此 MVP 的核心不是“功能少”，而是“Loop 完整”。**
+
+---
+
+# 38. 实现现状与技术栈
+
+## 38.1 技术栈
+
+设计文档只规定了能力边界，没有指定语言和框架。第一版实现选定：
+
+```text
+后端      Node 20+ / TypeScript / Fastify
+数据库    PostgreSQL（Neon 托管）/ PGlite（可选的内嵌本地数据库）
+前端      Nuxt 4 / Vue 3 / Nuxt UI 4
+Agent     Agent Engine Adapter + 真实 PI Agent 服务（OpenAI 兼容协议）
+```
+
+仓库结构：
+
+```text
+apps/api    后端 API、Agent Runtime、数据库 migration
+apps/web    前端控制台
+docs/       设计文档与 Memory
+```
+
+一些实现取舍：
+
+- 默认连接 `DATABASE_URL` 指向的真实 PostgreSQL；没有配置时回落到内嵌 PGlite，两者共用同一份 migration 和同一套 SQL。托管数据库会回收空闲连接，因此连接池设置了更短的 `idleTimeoutMillis`，并对连接层错误做一次重试。
+- Queue 直接用 `agent_runs` 表，待运行任务是 `status = 'pending'` 的记录，认领用 `FOR UPDATE SKIP LOCKED`，不额外引入消息队列。Worker 崩溃后任务仍留在表里，重启继续执行。
+- Agent 的每一次运行都调用真实的 Agent 服务，产品代码里没有 mock 引擎，也没有任何预置的示例数据。前端看到的 State、Event、Action、Recommendation 全部由真实 Agent 产出。
+
+## 38.2 阶段完成情况
+
+```text
+Phase 1  基础工程          完成：项目结构、配置、数据库连接、Migration、身份、隔离、错误格式
+Phase 2  Project + Database 完成：16 张业务表 + state_proposals + 3 张可靠性支撑表
+Phase 3  Agent Runtime     完成：Agent Run 状态机、Context Builder、Output Processor
+Phase 4  PI Agent Adapter  完成：AgentEngine 接口 + OpenAI 兼容的真实 Agent 服务接入
+Phase 5  Observation       完成：统一入口，Chat 与 Action Result 都走它
+Phase 6  State             完成：State Proposal、version 乐观锁、State 历史、人工确认
+Phase 7  Action + Execution 完成：创建、指派人、确认、拒绝、完成、失败、取消、事件关联
+Phase 8  Recommendation    完成：接受（可生成 Action）、拒绝、完成建议
+Phase 9  Chat              完成：Session + Observation + 轮询 Run
+Phase 10 Timeline 与前端    完成：Overview、Chat、Timeline、Actions、Action Detail、Settings
+Phase 11 Schedule          完成：cron/interval/once/event，按执行窗口去重
+Phase 12 Memory            基础完成：create 与 query，未做语义检索
+Phase 13 可靠性             完成：请求幂等、Schedule 去重、Project 锁、State 乐观锁、重试
+Phase 14 E2E Loop          完成：apps/api/test/loop.test.ts 覆盖第 29 节 Case 1-10
+```
+
+第 25 节的人工确认闸门落地后，Agent 的产出一部分自动生效（现状整理），一部分先待确认（结构性 State 变更、Action 提议、Project 完成），用户在界面上一键确认或忽略。身份解析也不再做无头请求回落，业务接口都要求 `X-User-Id`。
+
+此外还补上了 Event→Action 关联、event 型 Schedule、timeline 游标分页、幂等键过期回收和 Project 归档入口。
+
+第 22-24 节的 Tool Calling 也已启用：`get_project_state`、`create_action`、`complete_action` 三个工具由 Runtime 的 Tool Registry 提供，真实 Agent 服务在多轮循环里调用，`tool_calls` 表有完整记录。
+
+P2 的 Notification 与 Risk 也已落地：Risk Engine 确定性计算三类风险，Agent Run 结束后生成去重后的通知，前端有通知铃铛和通知页。
+
+登录与注册也已落地：邮箱密码注册/登录、Bearer 令牌鉴权、登出，前端有登录页和退出入口；Settings 页补上了 Success Criteria 编辑和归档。
+
+Action 不再只是翻状态：带 `kind`（task / meeting / document），完成时按类型采集结构化结果并写回 Agent 上下文。
+
+前端把 Action 详情按类型拆成三个独立页面（会议页 / 任务页 / 资料页），列表和 Overview 按 kind 跳转到对应页面，完成、失败、取消都在详情页上操作。
+
+## 38.3 尚未实现
+
+以下能力不影响 Loop 闭环，留到后续阶段：
+
+```text
+WebSocket / SSE 实时推送（当前前端轮询 Run 状态）
+Memory 语义检索与自动整理
+agent / system 两类 Action 执行器的自动执行
+密码找回 / 邮箱验证 / 第三方登录（登录注册已有，这些是增强）
+```
+
+---
+
+## 修改历史
+
+- 2026-10-05：新增第 38 节，记录第一版实现选定的技术栈、仓库结构、阶段完成情况和尚未实现的能力。
+- 2026-10-05：第 38 节更新为真实运行形态：前端升级到 Nuxt 4 与 Nuxt UI 4，Agent 只连真实服务，移除 mock 引擎与示例数据，并补充托管数据库的连接处理。
+- 2026-10-05：第 38.2 节补充人工确认闸门、Project 完成闭环和鉴权收紧的落地情况。
+- 2026-10-05：第 38 节补充登录/注册、通知与 Settings 页的落地情况，更新“尚未实现”清单。
+- 2026-10-05：第 38 节补充 Action 按类型拆分详情页（会议/任务/资料）与结构化执行结果。

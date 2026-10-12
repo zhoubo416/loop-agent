@@ -28,7 +28,13 @@
 
 ### 包管理
 
-- 项目当前只有设计文档,还没有代码和依赖管理配置。开始实现时,先在这里写明包管理器、workspace 结构、版本收敛规则和第三方依赖的审批流程,再引入依赖。
+- 使用 npm 管理依赖,仓库分成两个独立子项目:`apps/api`(后端与 Agent Runtime)和 `apps/web`(前端,最新版 Nuxt + Nuxt UI 组件)。两个子项目各自维护 `package.json`,根目录只提供转发脚本。
+- 依赖版本声明以子项目的 `package.json` 为准,lockfile 一并提交。新增依赖前先确认标准库或已有依赖是否已经能完成同样的事,不要为同一件事引入第二个库。
+- 运行时要求 Node 20 及以上,当前开发环境使用 Node 24。后端脚本统一用 `node --import tsx`,不要用 `tsx` CLI(它需要创建 IPC socket,在受限环境下会失败)。
+- 国内网络下安装依赖使用 `--registry=https://registry.npmmirror.com`;npm 默认不执行第三方安装脚本,需要放开脚本时按 Memory 中的"依赖管理与第三方执行代码审查"走完审查和人工确认。
+- 前端页面必须使用 Nuxt UI 组件实现,不要自己手写按钮、卡片、表单这类基础控件;布局和间距用 Nuxt UI 与 Tailwind 的既有约定,不自建第二套样式体系。
+- 产品代码里不允许出现 mock 引擎、假数据或占位的 Agent 实现。数据要么来自数据库,要么来自真实 Agent 服务;测试需要的确定性由测试目录里的测试替身提供,不进入产品路径。
+- 本地开发、数据库和验证命令见 Memory 中的"本地开发环境"。
 
 ### Git 和提交
 
@@ -44,6 +50,7 @@ Memory 记录项目开发过程中积累的经验和习惯,也是项目 Memory �
 
 - **提交规范** (`docs/memory/commit-conventions.md`) — 准备提交、组织 commit、处理分支或把改动合回主线时阅读。
 - **依赖管理与第三方执行代码审查** (`docs/memory/dependency-management.md`) — 新增、升级、重新解析或安装第三方依赖时阅读。
+- **本地开发环境** (`docs/memory/local-development.md`) — 启动后端或前端、准备数据库、运行测试或排查本地环境问题时阅读。
 
 ## Design
 

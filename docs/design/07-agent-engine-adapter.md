@@ -1166,3 +1166,35 @@ Engine A/B Test
 # 33. MVP 验收标准
 
 PI
+
+---
+
+# 34. 实现说明
+
+第一版按本文件落地在 `apps/api/src/agent`：
+
+```text
+agent/
+├── engine.ts               AgentEngine 接口与 AgentEngineError
+├── types.ts                AgentInput / AgentOutput 及所有 Context 类型
+├── context-builder.ts      从数据库组装 AgentInput
+├── output-validator.ts     把 Engine 输出解析成 AgentOutput
+└── engines/
+    └── pi-engine.ts        PI Agent Adapter（唯一的产品实现）
+```
+
+实现上的决定：
+
+- `PIAgentEngine` 走 OpenAI 兼容的 Chat Completions 协议。设计文档没有规定 PI Agent 的具体接口，把它收敛成一个可配置的 HTTP 端点后，接入真实 PI 服务只需要改 `buildPIInput` 和 `parsePIOutput`，Runtime 完全不受影响。第 25 节定义的错误类型在 `pi-engine.ts` 里都做了映射，可重试的错误按第 27 节做有限次退避重试。
+- 不同 Engine 对 JSON 输出模式的支持程度不一样。请求先带 `response_format: { type: 'json_object' }`；如果对方明确拒绝这个参数，就退回提示词约束再试一次，解析时再兜一层去除 Markdown 代码块。
+- 产品代码里没有 mock 或占位 Engine，Agent 产生的所有内容都来自真实服务。端到端测试需要的确定性由测试目录里的 Engine 替身提供，它通过 `setEngine()` 注入，不进入产品路径。
+
+Tool Calling 已启用：`PIAgentEngine` 在多轮循环里下发 `tools`，把模型的 `tool_calls` 交给 Runtime 提供的执行器，再把结果作为 `tool` 消息回传，直到模型给出最终结构化输出。工具清单和 `tool_calls` 记录都由 Runtime 的 Tool Registry 负责。
+
+---
+
+## 修改历史
+
+- 2026-10-05：新增第 34 节，记录 Agent Engine 的目录结构、PI 实现方式与 mock 引擎的定位。
+- 2026-10-05：删除 mock 引擎，产品只保留 `PIAgentEngine`；确定性的测试替身移到测试目录，并补充 JSON 输出模式的兼容处理。
+- 2026-10-05：第 34 节更新为 Tool Calling 已启用，记录多轮工具调用循环与 Tool Registry 的分工。

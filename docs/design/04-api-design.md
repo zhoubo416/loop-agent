@@ -1780,7 +1780,74 @@ Result
 
 ---
 
-# 47. 最终 API 模型
+# 47. 实现补充的接口
+
+第 4 到 34 节定义的是 LOOP 的对外主接口。实现时为前端和测试补了几个不改变主模型的接口，它们都属于既有资源的查询或状态流转，不引入新概念。
+
+```text
+GET    /api/v1/users
+GET    /api/v1/projects/{project_id}/sessions
+POST   /api/v1/projects/{project_id}/actions/{action_id}/fail
+POST   /api/v1/projects/{project_id}/runs                 支持 wait=true
+POST   /api/v1/projects/{project_id}/schedules            支持 run_now=true
+```
+
+- `GET /users` 返回用户清单，供前端选择 Action 负责人。MVP 没有独立的人员目录接口，先由它承担。
+- `GET /sessions` 按创建时间倒序返回 Session，前端进入 Chat 时用它找回最近一次会话。
+- `POST /actions/{action_id}/fail` 与已有的 complete、cancel 并列：失败同样产生 Execution 和 Observation，让 Agent 知道“这次尝试没有成功”。第 20 节的 complete 接口只覆盖成功路径。
+- `POST /runs` 的 `wait=true` 会同步执行完这次 Agent Run 再返回，用于调试和端到端测试；默认仍然是异步返回 `202 Accepted`。
+- `POST /schedules` 的 `run_now=true` 会把 `next_run_at` 设为当前时间并立刻扫描一次，用于验证 Schedule 触发链路。它仍然经过第 38 节的幂等表，不会绕过去重。
+
+实现人工确认闸门后，新增下面这组接口：
+
+```text
+POST   /api/v1/projects/{project_id}/actions/{action_id}/confirm
+POST   /api/v1/projects/{project_id}/actions/{action_id}/decline
+GET    /api/v1/projects/{project_id}/state/proposals
+POST   /api/v1/projects/{project_id}/state/proposals/{proposal_id}/apply
+POST   /api/v1/projects/{project_id}/state/proposals/{proposal_id}/reject
+POST   /api/v1/dev-login
+```
+
+- Agent 产出的 Action 先处于 `proposed`，用户 `confirm` 后才进入 `pending`，`decline` 则转为 `cancelled`。用户通过 `POST /actions` 直接创建的 Action 不需要确认，直接是 `pending`。
+- State 的结构性变更（阶段、开放问题、风险、未知项）先落 `state/proposals`，用户 `apply` 后应用，`reject` 则丢弃。
+- `POST /completion/confirm` 不再接受 `force`，必须引用 Agent 提出的 `type=completion` 的 Recommendation；Runtime 会校验没有未完成 Action 和开放问题后才完成。
+- `POST /dev-login` 只在开发环境开放，用于前端拿到开发用户身份。业务接口不再对无 `X-User-Id` 的请求做身份回落。
+- `GET /projects/{project_id}/timeline` 支持 `cursor` 游标分页，响应带 `next_cursor`。
+- `POST /projects/{project_id}/archive` 把 Project 置为 `archived`，之后不再接受新的触发。
+- `GET /notifications`、`POST /notifications/{id}/read`、`POST /notifications/read-all` 提供跨 Project 的通知列表与已读操作，`GET /notifications/unread-count` 返回未读数。
+- Action 带 `kind`（task / meeting / document），`POST /actions` 创建时指定；`POST /actions/{id}/complete` 的 `result.output` 接收该类型对应的结构化字段（会议：participants/decisions/action_items，资料：key_points/content，任务：results/blockers），Runtime 会把结构化结果整理进 Observation。
+- `GET /projects/{project_id}/actions/{action_id}` 额外返回 `source`（来源事件、建议、触发观察与智能体判断）和 `analysis`（该 Action 完成后智能体后续运行的分析结论），供详情页展示“为什么产生这个 Action”和“执行之后智能体怎么看”。
+
+腾讯会议集成接口：
+
+```text
+GET  /api/v1/me/integrations/tencent-meeting
+PUT  /api/v1/me/integrations/tencent-meeting
+POST /api/v1/projects/{project_id}/actions/{action_id}/meeting-sync
+```
+
+- `GET` 只返回 `{ configured }`，不返回 Token。
+- `PUT` 接收 `{ token }`，服务端使用 AES-256-GCM 加密后按用户保存。
+- `POST /meeting-sync` 接收 `{ meeting_code }`，只允许 `kind=meeting` 的 Action。服务端通过腾讯会议 MCP 的只读工具读取会议详情、参会人、录制、逐字稿和智能纪要，并返回 `meeting_sync` 快照。
+- Action 详情响应增加 `meeting_sync`，没有同步记录时为 `null`。完整逐字稿保存在会议同步记录中，不写入 Agent Observation。
+
+登录与注册：
+
+```text
+POST   /api/v1/auth/register   { email, password, name } → { user, token }
+POST   /api/v1/auth/login      { email, password } → { user, token }
+POST   /api/v1/auth/logout
+GET    /api/v1/auth/me
+```
+
+注册和登录返回一个不透明访问令牌，之后所有业务接口用 `Authorization: Bearer <token>` 携带身份；`X-User-Id` 仅作为开发环境的兜底保留。令牌用 sha256 摘要存库，有效期 30 天。
+
+另外，Run 记录里的 `error.code` 取值来自第 38 节的错误码和 Agent Engine 的错误码（`ENGINE_TIMEOUT`、`ENGINE_INVALID_OUTPUT` 等），前端可以直接按错误码判断是否需要重试。
+
+---
+
+# 48. 最终 API 模型
 
 LOOP API 可以浓缩成一句话：
 
@@ -1836,3 +1903,14 @@ Run Agent
 ```
 
 这才是 LOOP API 与普通项目管理系统 API 的根本区别。
+
+---
+
+## 修改历史
+
+- 2026-10-05：新增第 47 节“实现补充的接口”，登记用户清单、Session 列表、Action 失败、手动 Run 同步执行和 Schedule 立即触发这几个实现期补充的接口。
+- 2026-10-05：第 47 节补充 Action 确认/拒绝、State Proposal 应用/拒绝、完成确认约束和开发登录接口，把人工确认闸门纳入对外契约。
+- 2026-10-05：第 47 节补充 timeline 游标分页和归档接口。
+- 2026-10-05：第 47 节补充通知列表与已读接口。
+- 2026-10-05：第 47 节补充登录/注册与 Bearer 令牌鉴权接口。
+- 2026-10-05：第 47 节补充腾讯会议 Token 配置和 meeting Action 按需同步接口。

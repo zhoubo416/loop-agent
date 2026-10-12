@@ -2455,3 +2455,69 @@ LOOP 最终可以抽象为：
 因此 LOOP 的核心技术并不是“怎么调用一个大模型”，而是：
 
 > **如何让一个 Project 在数天、数周甚至数月的时间里，持续根据现实变化进行 Observe → Think → Act → Feedback。**
+
+---
+
+# 49. 实现说明
+
+第 4 节到第 42 节描述的是 Runtime 的行为契约，第一版实现完全按这套契约落地。落地时有几处需要说明的细节：
+
+## 49.1 Worker 与队列
+
+Queue 就是 `agent_runs` 表本身：待运行任务是 `status = 'pending'` 的记录，Worker 用 `FOR UPDATE SKIP LOCKED` 认领，认领时把状态改成 `running` 并累加 `attempts`。这样不需要额外的消息队列，Worker 崩溃后任务也不会丢。
+
+同一个 Project 的并发控制分两层：先尝试拿 `project_locks` 里的 Project 锁，拿不到就把这次 Run 退回 `pending` 等待；即使锁失效，State 的 `version` 乐观锁仍然会拦住覆盖写入，冲突后 Run 会按第 33 节的策略重试。
+
+## 49.2 一次 Run 的写入边界
+
+`Output Processor` 在一个事务里完成 Event、Action、Recommendation、Memory 的写入和 State 更新。事务之后 Runtime 还会同步一次 `state.active_actions`，让 State 里的行动摘要始终和 `actions` 表里未结束的记录一致。因此一次 Run 通常会产生两个 State 版本：一个是 Agent 提出的 State Proposal，一个是 Runtime 同步的行动摘要。
+
+Action 完成、失败、取消时，Execution、Action 状态、Observation 和新的 Agent Run 也在同一个事务里产生，保证第 14 节的 Result → Observation 不会断链。
+
+## 49.3 Agent Engine 的默认实现
+
+`AgentEngine` 接口只有 `run(input)`，产品代码里只有一个实现：`PIAgentEngine`，走 OpenAI 兼容的 Chat Completions 协议，由 `AGENT_ENGINE_*` 环境变量配置。真实的 PI Agent 服务接入时，只需要改 `PIAgentEngine` 内部的调用和解析，Runtime、Context Builder 和工具层都不受影响。
+
+产品运行路径上不存在模拟或占位实现：Agent 产出的每一条 State、Event、Action、Recommendation 都来自真实 Engine。端到端测试需要可复现的输入输出，因此测试目录里自带一个只用于测试的确定性 Engine 替身，通过 `setEngine()` 注入；它不参与任何产品路径，也不进入构建产物。真实 Engine 的连通性由 `test/pi-engine.test.ts` 单独覆盖，需要显式开启。
+
+## 49.4 Tool Calling 的现状
+
+第 30、31 节的 Tool Registry 已按第 22 节的分层落地：Agent Engine 负责生成 `tool_calls`，Runtime 提供工具执行器并负责权限、数据库写入和 `tool_calls` 记录。MVP 实现三个工具：`get_project_state`、`create_action`、`complete_action`。
+
+`create_action` 创建的 Action 遵循同一个确认闸门（先 `proposed`），`complete_action` 复用 Event→Action 关联的 `agent` 类型执行记录。工具和结构化输出可以并存：Agent 既可能先调工具再给最终输出，也可能只走结构化输出；最终输出里如果又列出了工具已经创建的 Action，会按标题去重，不会重复建。
+
+## 49.5 人工确认闸门
+
+第 25 节的分级确认在第一版按“自动 / 建议确认”两档落地：
+
+- 现状整理（`current_situation`、`context`）自动应用。
+- 结构性 State 变更（阶段、开放问题、风险、未知项）先写入 `state_proposals`，用户 apply 后才生效。
+- Agent 产出的 Action 先处于 `proposed`，用户 confirm 后进入 `pending`，decline 则取消；用户自己创建的 Action 不需要确认。
+- Project 完成由 Agent 提出 `type=completion` 的 Recommendation，用户确认后 Runtime 校验没有未完成 Action 和开放问题，再进入 Completed。
+
+这样“LLM 只提议，用户确认后 Runtime 才落库”的原则，覆盖到了 Action、State 和 Project 完成三条路径。
+
+## 49.6 Event 与 Action 的关联、event 型 Schedule
+
+第 28 节的 Event → Action 关联落地为：Agent 在输出里引用已有 Action 的 `id` 并给出 `status`，Runtime 据此记录一次 agent 类型的 Execution、更新 Action 状态并写 Observation，而不新建 Action，也不重复触发 Run（当前这次 Run 本身就在处理这个事件）。
+
+第 35 节的 Schedule 补齐了 `event` 类型：项目里出现匹配类型的事件时触发 Agent，匹配键是 `schedule.payload.event_type`。`manual` 类型仍然只保存不自动触发。
+
+## 49.7 Risk Engine 与 Notification
+
+风险不靠模型编造，而是 Risk Engine 从既有数据里确定性计算：Action 长期无进展、同一 Action 连续失败、Project 长时间没有变化三类。每次 Agent Run 结束后，新建议和风险会生成一条 `notifications` 记录，用 `dedup_key` 去重，避免同一条判断反复打扰用户。通知围绕“Agent 认为值得你知道”，而不是原始更新提醒。
+
+## 49.8 Action 的结构化执行结果
+
+第 14 节的 Result → Observation 不能只是“改一个状态”。Action 现在带 `kind`（task / meeting / document），完成时按种类采集结构化结果：会议采参与人、纪要、决定、后续行动；资料采要点和内容；任务采结果、阻塞和说明。结构化数据写入 `executions.output`，并整理成信息密集的文字写进 Observation，随 `recent_results` 一起回到 Agent 的上下文，Agent 才能基于“实际发生了什么”继续判断。
+---
+
+## 修改历史
+
+- 2026-10-05：新增第 49 节，记录第一版实现中 Worker、事务边界、Agent Engine 和 Tool Calling 的落地方式。
+- 2026-10-05：第 49.3 节改为只描述真实 Engine；确定性实现从产品代码移到测试目录，仅在测试中注入。
+- 2026-10-05：新增第 49.5 节，记录人工确认闸门在 Action、State、Project 完成三条路径上的实现。
+- 2026-10-05：新增第 49.6 节，记录 Event→Action 关联和 event 型 Schedule 的实现。
+- 2026-10-05：新增第 49.7 节，记录 Risk Engine 与 Notification 的实现。
+- 2026-10-05：新增第 49.8 节，记录 Action 按 kind 采集结构化执行结果。
+- 2026-10-05：第 49.4 节更新为已实现，记录 Tool Registry 的三个工具与确认闸门的复用。

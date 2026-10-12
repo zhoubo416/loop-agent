@@ -788,12 +788,15 @@ system
 ### status
 
 ```text
+proposed
 pending
 running
 completed
 failed
 cancelled
 ```
+
+`proposed` 是 Agent 产出、等待用户确认的状态，用户确认后进入 `pending`，拒绝后进入 `cancelled`。它把“Agent 提议”和“真正要执行的行动”分开，落实第 25 节的人工确认。
 
 ### priority
 
@@ -1856,7 +1859,148 @@ archived
 
 ---
 
-# 38. 最终原则
+# 38. 可靠性支撑表
+
+除了第 5 到 20 节的业务表，Runtime 还需要三张表来落实第 28、29、30 节要求的并发控制和幂等。这三张表不承载业务语义，只保存“这件事已经发生过”的事实。
+
+## 38.1 idempotency_keys
+
+HTTP 层幂等。`POST /observations`、`POST /chat` 这类会触发 Agent Run 的接口，客户端可以带 `Idempotency-Key`。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| scope | varchar(200) | NO | - | 幂等范围，例如 `observation:{project_id}` |
+| key | varchar(255) | NO | - | 客户端提供的幂等键 |
+| request_hash | varchar(64) | YES | - | 保留字段，用于区分同键不同请求 |
+| response | jsonb | NO | '{}' | 首次请求的响应，重复请求直接回放 |
+| status | varchar(30) | NO | 'completed' | in_progress / completed |
+| created_at | timestamptz | NO | now() | 创建时间 |
+
+```text
+UNIQUE(scope, key)
+```
+
+请求进入时先抢占 `(scope, key)`：抢到就执行业务逻辑并把响应写回；没抢到就回放已有响应，或者返回 `IDEMPOTENCY_CONFLICT`。业务逻辑失败时删除这条记录，允许客户端重试。
+
+## 38.2 schedule_occurrences
+
+Schedule 幂等。唯一标识是 `schedule_id + scheduled_at`，也就是“计划执行时间”而不是“实际执行时间”。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| schedule_id | uuid | NO | - | Schedule |
+| scheduled_at | timestamptz | NO | - | 本次计划执行时间 |
+| agent_run_id | uuid | YES | - | 产生的 Agent Run |
+| observation_id | uuid | YES | - | 产生的 Observation |
+| created_at | timestamptz | NO | now() | 创建时间 |
+
+```text
+UNIQUE(schedule_id, scheduled_at)
+
+FK(schedule_id)
+→ schedules.id
+```
+
+Worker 用 `INSERT ... ON CONFLICT DO NOTHING` 抢占执行窗口，抢到的实例才继续创建 Observation 和 Agent Run。Worker 重启、重复扫描、多实例同时扫描都不会让同一个窗口触发两次。
+
+## 38.3 project_locks
+
+Project 级运行锁，保证同一个 Project 同一时间只有一个 Agent Run 在修改 State。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| project_id | uuid | NO | - | PK，Project |
+| holder | varchar(200) | NO | - | 持有者标识，例如 worker-1234 |
+| agent_run_id | uuid | YES | - | 持有锁的 Run |
+| acquired_at | timestamptz | NO | now() | 获取时间 |
+| expires_at | timestamptz | NO | - | 过期时间 |
+
+```text
+PK(project_id)
+```
+
+获取锁用 `INSERT ... ON CONFLICT (project_id) DO UPDATE ... WHERE project_locks.expires_at < now()`，只有在没有锁或锁已过期时才会成功。`expires_at` 让 Worker 崩溃后不会永久占着锁。
+
+这一层是“减少冲突”，不是“保证正确”：State 的 `version` 乐观锁仍然是最终防线，即使锁失效，状态也不会被静默覆盖。
+
+---
+
+# 39. state_proposals
+
+## 39.1 作用
+
+Agent 提出的结构性 State 变更，在应用前先落在这里等待用户确认。它与 `agent_state_versions` 的分工是：后者记录“已经发生过的 State 历史”，前者记录“可能发生、还没发生的变更”。
+
+## 39.2 表结构
+
+```sql
+state_proposals
+```
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| project_id | uuid | NO | - | Project |
+| agent_run_id | uuid | YES | - | 提出变更的 Agent Run |
+| proposal | jsonb | NO | '{}' | 待确认的 State 变更 |
+| status | varchar(20) | NO | 'pending' | 状态 |
+| created_at | timestamptz | NO | now() | 创建时间 |
+| resolved_at | timestamptz | YES | - | 处理时间 |
+
+```text
+status: pending / applied / rejected / expired
+```
+
+## 39.3 与 State 更新的分工
+
+Agent 的 `state_proposal` 拆成两部分处理：
+
+- `current_situation`、`context` 属于现状整理，直接应用（第 25 节的 Level 1 自动）。
+- `current_stage`、`open_issues`、`risks`、`unknowns` 属于改变阶段或结构，先写进本表，用户 apply 后才写入 `agent_states` 并生成 `agent_state_versions`。
+
+这样“LLM 只提议、用户确认后 Runtime 才落库”的原则，对 State 这条路径也成立了。
+
+---
+
+# 40. notifications
+
+## 40.1 作用
+
+通知围绕“Agent 认为值得用户知道的事”，而不是“有东西更新了”。来源是 Agent 的新建议、Risk Engine 的风险发现，以及 Project 完成的提醒。
+
+## 40.2 表结构
+
+```sql
+notifications
+```
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| project_id | uuid | NO | - | Project |
+| type | varchar(30) | NO | - | recommendation / risk / completion / event / system |
+| severity | varchar(20) | NO | 'info' | info / warning / critical |
+| title | varchar(300) | NO | - | 标题 |
+| content | text | NO | - | 内容 |
+| source_type | varchar(30) | YES | - | 来源类型 |
+| source_id | uuid | YES | - | 来源 ID |
+| dedup_key | varchar(255) | YES | - | 去重键 |
+| status | varchar(20) | NO | 'unread' | unread / read |
+| created_at | timestamptz | NO | now() | 创建时间 |
+| read_at | timestamptz | YES | - | 已读时间 |
+
+```text
+INDEX(project_id, status, created_at DESC)
+INDEX(project_id, dedup_key)
+```
+
+`dedup_key` 让同一条判断不会反复生成通知，例如 `recommendation:{id}` 或 `risk:stale_action:{action_id}`。
+
+---
+
+# 41. 最终原则
 
 LOOP 数据库设计遵循一句话：
 
@@ -1896,3 +2040,55 @@ Schedule
 ```
 
 这就是 LOOP MVP 的完整数据基础。
+
+---
+
+# 41. 腾讯会议集成
+
+## 41.1 `user_integrations`
+
+保存用户级第三方服务凭证。当前仅支持 `provider=tencent_meeting`。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| user_id | uuid | NO | - | 用户 |
+| provider | varchar(50) | NO | - | 集成提供方 |
+| encrypted_token | text | NO | - | AES-256-GCM 密文，不返回前端 |
+| created_at | timestamptz | NO | now() | 创建时间 |
+| updated_at | timestamptz | NO | now() | 更新时间 |
+
+同一个用户和提供方只能有一条凭证。加密密钥只从服务端环境变量读取，不能写入数据库、日志或前端响应。
+
+## 41.2 `action_meeting_syncs`
+
+保存会议 Action 最近一次从腾讯会议同步的内容。它和 `executions` 分工不同：本表保存可反复查看的原始会议资料，Execution 只保存用户确认完成时提交给 Agent 的结构化结果。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| action_id | uuid | NO | - | 唯一关联一个 meeting Action |
+| meeting_code | varchar(9) | NO | - | 腾讯会议号 |
+| meeting_id | varchar(200) | YES | - | 腾讯会议内部 ID |
+| record_file_id | varchar(200) | YES | - | 云录制文件 ID |
+| meeting_title | varchar(300) | YES | - | 会议标题 |
+| started_at / ended_at | timestamptz | YES | - | 会议开始和结束时间 |
+| participants | jsonb | NO | `[]` | 实际参会人名称列表 |
+| summary | text | YES | - | AI 智能纪要 |
+| todo | text | YES | - | AI 纪要中的待办 |
+| transcript | text | YES | - | 完整逐字稿 |
+| transcript_segments | jsonb | NO | `[]` | 带发言人和时间的逐字稿分段 |
+| synced_at | timestamptz | NO | now() | 最近同步时间 |
+
+`action_id` 唯一约束保证重复点击同步只更新当前快照，不产生重复记录。
+
+---
+
+## 修改历史
+
+- 2026-10-05：新增第 38 节“可靠性支撑表”，把 `idempotency_keys`、`schedule_occurrences`、`project_locks` 纳入数据模型；这三张表分别是 HTTP 幂等、Schedule 去重和 Project 运行锁的落地方式。
+- 2026-10-05：Action 状态增加 `proposed`，新增第 39 节 `state_proposals` 表，落实人工确认闸门：Agent 的结构性 State 变更与产出的 Action 都先待用户确认。
+- 2026-10-05：新增第 40 节 `notifications` 表，支撑围绕 Agent 判断的通知。
+- 2026-10-05：`users` 增加 `password_hash`，新增 `user_tokens` 表，支撑邮箱密码登录与令牌鉴权。
+- 2026-10-05：`actions` 增加 `kind`（task / meeting / document），区分行动对应的工作类型，完成时按类型采集结构化结果。
+- 2026-10-05：新增 `user_integrations` 与 `action_meeting_syncs`，支持会议 Action 按需同步腾讯会议 Token、纪要、参会人和逐字稿。
