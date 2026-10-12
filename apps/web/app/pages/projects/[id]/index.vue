@@ -16,7 +16,7 @@ const api = useApi()
 const { waitForRun } = useRunWaiter()
 const projectId = computed(() => route.params.id as string)
 
-const { data, refresh, error } = await useAsyncData(
+const { data, refresh, error, pending } = await useAsyncData(
   () => `overview-${projectId.value}`,
   () => api.get<Overview>(`/projects/${projectId.value}/overview`),
 )
@@ -135,7 +135,19 @@ function confirmCompletion(recommendationId: string) {
     <UAlert v-if="error" color="error" variant="soft" :title="error.message" class="mb-4" />
     <UAlert v-if="actionError" color="error" variant="soft" :title="actionError" class="mb-4" />
 
-    <template v-if="data">
+    <div v-if="pending && !data" class="flex flex-col gap-4">
+      <div class="flex items-start justify-between gap-4">
+        <USkeleton class="h-8 w-64" />
+        <USkeleton class="h-8 w-32" />
+      </div>
+      <USkeleton class="h-24 rounded-xl" />
+      <div class="grid gap-4 md:grid-cols-2">
+        <USkeleton class="h-40 rounded-xl" />
+        <USkeleton class="h-40 rounded-xl" />
+      </div>
+    </div>
+
+    <template v-else-if="data">
       <div class="mb-6 flex items-start justify-between gap-4">
         <div class="min-w-0">
           <h1 class="text-2xl font-semibold">{{ data.project.name }}</h1>

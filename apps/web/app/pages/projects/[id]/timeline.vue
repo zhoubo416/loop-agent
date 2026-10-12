@@ -12,7 +12,7 @@ const route = useRoute()
 const api = useApi()
 const projectId = computed(() => route.params.id as string)
 
-const { data, refresh } = await useAsyncData(
+const { data, refresh, pending } = await useAsyncData(
   () => `timeline-${projectId.value}`,
   () => api.get<{ items: TimelineItem[] }>(`/projects/${projectId.value}/timeline`),
 )
@@ -56,7 +56,10 @@ const filtered = computed(() =>
     </div>
 
     <UCard>
-      <div v-if="filtered.length" class="flex flex-col gap-3">
+      <div v-if="pending && !data" class="flex flex-col gap-3">
+        <USkeleton v-for="n in 6" :key="n" class="h-16" />
+      </div>
+      <div v-else-if="filtered.length" class="flex flex-col gap-3">
         <div
           v-for="item in filtered"
           :key="`${item.type}-${item.id}`"

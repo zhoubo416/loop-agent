@@ -16,6 +16,11 @@ body {
 }
 
 .lo-sidebar {
+  /* 页面滚动时侧边栏保持可见;项目多时自己纵向滚动 */
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
   width: 264px;
   flex-shrink: 0;
   border-right: 1px solid var(--ui-border);
@@ -23,6 +28,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
   background: var(--ui-bg);
 }
 
@@ -48,11 +54,39 @@ body {
   align-items: start;
 }
 
+/* 第三列承载任意长度的文本,限制最小宽度避免长字符串横向撑破容器 */
+.lo-timeline-row > :nth-child(3) {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* 页面切换过渡:淡入淡出加轻微上移,保持安静的观感 */
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 @media (max-width: 900px) {
   .lo-shell {
     flex-direction: column;
   }
   .lo-sidebar {
+    /* 顶栏模式下回到普通文档流,不吸边 */
+    position: static;
+    height: auto;
+    overflow-y: visible;
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--ui-border);

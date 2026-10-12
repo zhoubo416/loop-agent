@@ -22,14 +22,14 @@ const route = useRoute()
 const api = useApi()
 const projectId = computed(() => route.params.id as string)
 
-const { data, refresh } = await useAsyncData(
-  () => `actions-${projectId.value}`,
-  () => api.get<{ items: ActionItem[] }>(`/projects/${projectId.value}/actions`),
-)
-
-const { data: users } = await useAsyncData('users', () =>
-  api.get<{ items: UserItem[] }>('/users'),
-)
+// 两个请求并行发出,避免串行等待拉长加载时间
+const [{ data, refresh }, { data: users }] = await Promise.all([
+  useAsyncData(
+    () => `actions-${projectId.value}`,
+    () => api.get<{ items: ActionItem[] }>(`/projects/${projectId.value}/actions`),
+  ),
+  useAsyncData('users', () => api.get<{ items: UserItem[] }>('/users')),
+])
 
 const filterOptions = [
   { label: '进行中', value: 'open' },
@@ -175,7 +175,10 @@ async function create() {
       </UButton>
     </div>
 
-    <div class="flex flex-col gap-3">
+    <div v-if="pending && !data" class="flex flex-col gap-3">
+      <USkeleton v-for="n in 4" :key="n" class="h-20 rounded-lg" />
+    </div>
+    <div v-else class="flex flex-col gap-3">
       <UCard v-for="action in filtered" :key="action.id" :ui="{ body: 'sm:p-3' }">
         <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
           <NuxtLink
@@ -230,7 +233,7 @@ async function create() {
       </UCard>
     </div>
 
-    <p v-if="!filtered.length" class="mt-3 text-sm text-muted">这个范围内没有行动。</p>
+    <p v-if="!pending && !filtered.length" class="mt-3 text-sm text-muted">这个范围内没有行动。</p>
 
     <UModal v-model:open="createOpen" title="新增行动">
       <template #body>

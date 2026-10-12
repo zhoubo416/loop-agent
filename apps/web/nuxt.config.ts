@@ -12,6 +12,8 @@ export default defineNuxtConfig({
     },
   },
   app: {
+    // 页面切换统一使用淡入淡出过渡,具体动效在 main.css 里定义
+    pageTransition: { name: 'page', mode: 'out-in' },
     head: {
       title: 'LOOP',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],

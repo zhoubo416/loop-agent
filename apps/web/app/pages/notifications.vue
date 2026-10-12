@@ -12,7 +12,7 @@ interface NotificationItem {
 
 const api = useApi()
 
-const { data, refresh } = await useAsyncData('notifications', () =>
+const { data, refresh, pending } = await useAsyncData('notifications', () =>
   api.get<{ items: NotificationItem[]; unread_count: number }>('/notifications'),
 )
 
@@ -56,7 +56,10 @@ async function readAll() {
       </UButton>
     </div>
 
-    <div v-if="data?.items.length" class="flex flex-col gap-3">
+    <div v-if="pending && !data" class="flex flex-col gap-3">
+      <USkeleton v-for="n in 4" :key="n" class="h-20 rounded-lg" />
+    </div>
+    <div v-else-if="data?.items.length" class="flex flex-col gap-3">
       <UCard
         v-for="item in data.items"
         :key="item.id"

@@ -34,24 +34,27 @@ const route = useRoute()
 const api = useApi()
 const projectId = computed(() => route.params.id as string)
 
-const { data: project, refresh: refreshProject } = await useAsyncData(
-  () => `project-${projectId.value}`,
-  () => api.get<ProjectDetail>(`/projects/${projectId.value}`),
-)
-
-const { data: members, refresh: refreshMembers } = await useAsyncData(
-  () => `members-${projectId.value}`,
-  () => api.get<{ items: MemberItem[] }>(`/projects/${projectId.value}/members`),
-)
-
-const { data: schedules, refresh: refreshSchedules } = await useAsyncData(
-  () => `schedules-${projectId.value}`,
-  () => api.get<{ items: ScheduleItem[] }>(`/projects/${projectId.value}/schedules`),
-)
-
-const { data: users } = await useAsyncData('settings-users', () =>
-  api.get<{ items: UserItem[] }>('/users'),
-)
+// 四个请求并行发出,避免串行等待拉长加载时间
+const [
+  { data: project, refresh: refreshProject, pending },
+  { data: members, refresh: refreshMembers },
+  { data: schedules, refresh: refreshSchedules },
+  { data: users },
+] = await Promise.all([
+  useAsyncData(
+    () => `project-${projectId.value}`,
+    () => api.get<ProjectDetail>(`/projects/${projectId.value}`),
+  ),
+  useAsyncData(
+    () => `members-${projectId.value}`,
+    () => api.get<{ items: MemberItem[] }>(`/projects/${projectId.value}/members`),
+  ),
+  useAsyncData(
+    () => `schedules-${projectId.value}`,
+    () => api.get<{ items: ScheduleItem[] }>(`/projects/${projectId.value}/schedules`),
+  ),
+  useAsyncData('settings-users', () => api.get<{ items: UserItem[] }>('/users')),
+])
 
 const form = reactive({ name: '', objective: '', description: '', successCriteria: '' })
 const newMemberId = ref('')
@@ -187,6 +190,14 @@ function archive() {
     <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
     <UAlert v-if="notice" color="success" variant="soft" :title="notice" class="mb-4" />
 
+    <div v-if="pending && !project" class="flex flex-col gap-4">
+      <USkeleton class="h-72 rounded-xl" />
+      <USkeleton class="h-48 rounded-xl" />
+      <USkeleton class="h-48 rounded-xl" />
+      <USkeleton class="h-28 rounded-xl" />
+    </div>
+
+    <template v-else>
     <UCard class="mb-4">
       <template #header>
         <span class="font-medium">基本信息</span>
@@ -284,7 +295,7 @@ function archive() {
           </div>
         </div>
       </div>
-      <p v-else class="text-sm text-muted">
+      <p v-else-if="schedules" class="text-sm text-muted">
         还没有定时任务,智能体目前只在你提供新信息时被唤醒。
       </p>
 
@@ -330,5 +341,6 @@ function archive() {
         </UButton>
       </div>
     </UCard>
+    </template>
   </UContainer>
 </template>

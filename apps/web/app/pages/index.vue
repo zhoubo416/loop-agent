@@ -82,7 +82,10 @@ async function createProject() {
       </div>
     </UCard>
 
-    <div class="flex flex-col gap-3">
+    <div v-if="pending && !data" class="flex flex-col gap-3">
+      <USkeleton v-for="n in 3" :key="n" class="h-24 rounded-lg" />
+    </div>
+    <div v-else class="flex flex-col gap-3">
       <NuxtLink
         v-for="project in data?.items ?? []"
         :key="project.id"

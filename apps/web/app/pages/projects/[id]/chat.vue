@@ -18,7 +18,7 @@ const { waitForRun } = useRunWaiter()
 const projectId = computed(() => route.params.id as string)
 
 // 首屏由服务端取回最近一次会话,客户端继续沿用同一份数据
-const { data: initial } = await useAsyncData(
+const { data: initial, pending } = await useAsyncData(
   () => `chat-${projectId.value}`,
   async () => {
     const sessions = await api.get<{ items: SessionItem[] }>(
@@ -39,6 +39,15 @@ const draft = ref('')
 const sending = ref(false)
 const error = ref('')
 const runStatus = ref('')
+
+// 新消息进入后自动滚到页面底部,保持最新内容可见
+watch(
+  () => messages.value.length,
+  async () => {
+    await nextTick()
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+  },
+)
 
 async function loadMessages(id: string) {
   const result = await api.get<{ items: MessageItem[] }>(
@@ -105,7 +114,10 @@ async function send() {
     <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
 
     <div class="flex flex-col gap-3">
-      <p v-if="!messages.length" class="text-sm text-muted">
+      <template v-if="pending && !initial">
+        <USkeleton v-for="n in 3" :key="n" class="lo-message h-16 rounded-xl" />
+      </template>
+      <p v-else-if="!messages.length" class="text-sm text-muted">
         还没有对话。试着告诉智能体项目现在发生了什么,例如“第一轮实验已经完成,结果不错”。
       </p>
       <div
@@ -126,15 +138,15 @@ async function send() {
           <div class="whitespace-pre-wrap">{{ message.content }}</div>
         </UCard>
       </div>
-      <UAlert
-        v-if="sending"
-        color="info"
-        variant="soft"
-        :title="runStatus || '智能体正在思考…'"
-      />
+      <UCard v-if="sending" :ui="{ body: 'sm:p-3' }" variant="outline" class="lo-message">
+        <div class="flex items-center gap-2 text-sm text-muted">
+          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+          {{ runStatus || '智能体正在思考…' }}
+        </div>
+      </UCard>
     </div>
 
-    <UCard class="mt-6">
+    <UCard class="sticky bottom-0 z-10 mt-6 shadow-lg">
       <div class="flex flex-col gap-3">
         <UTextarea
           v-model="draft"

@@ -48,7 +48,7 @@ const api = useApi()
 const projectId = computed(() => route.params.id as string)
 const actionId = computed(() => route.params.actionId as string)
 
-const { data: action, refresh } = await useAsyncData(
+const { data: action, refresh, pending } = await useAsyncData(
   () => `meeting-${actionId.value}`,
   () => api.get<ActionDetail>(`/projects/${projectId.value}/actions/${actionId.value}`),
 )
@@ -97,7 +97,18 @@ function failWithReason() {
     <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
     <UAlert v-if="notice" color="info" variant="soft" :title="notice" class="mb-4" />
 
-    <template v-if="action">
+    <div v-if="pending && !action" class="flex flex-col gap-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <USkeleton class="h-7 w-72" />
+        <USkeleton class="h-6 w-48" />
+      </div>
+      <div class="grid gap-4 lg:grid-cols-3">
+        <USkeleton class="h-72 rounded-xl lg:col-span-2" />
+        <USkeleton class="h-56 rounded-xl" />
+      </div>
+    </div>
+
+    <template v-else-if="action">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <h1 class="text-xl font-semibold">{{ action.title }}</h1>
