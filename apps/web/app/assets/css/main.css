@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+@import '@nuxt/ui';
+
+:root {
+  --ui-container: 1180px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.lo-sidebar {
+  width: 264px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--ui-border);
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--ui-bg);
+}
+
+.lo-main {
+  flex: 1;
+  min-width: 0;
+  padding: 28px 32px 64px;
+}
+
+.lo-message {
+  max-width: 78%;
+  white-space: pre-wrap;
+}
+
+.lo-message-user {
+  align-self: flex-end;
+}
+
+.lo-timeline-row {
+  display: grid;
+  grid-template-columns: 104px 76px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .lo-shell {
+    flex-direction: column;
+  }
+  .lo-sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--ui-border);
+  }
+  .lo-main {
+    padding: 20px 16px 56px;
+  }
+  .lo-timeline-row {
+    grid-template-columns: 84px 1fr;
+  }
+}
