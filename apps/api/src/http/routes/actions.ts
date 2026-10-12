@@ -9,7 +9,6 @@ import {
   getActionAnalysis,
   getActionSource,
   getAction,
-  getActionMeetingSync,
   insertAction,
   listActions,
   updateAction,
@@ -22,10 +21,6 @@ import {
 } from '../../modules/recommendations.js'
 import { cancelAction, completeAction, failAction } from '../../runtime/action-service.js'
 import { syncActiveActions } from '../../runtime/active-actions.js'
-import { ApiError } from '../errors.js'
-import { getTencentMeetingToken } from '../../modules/integrations.js'
-import { saveMeetingSync } from '../../modules/meeting-sync.js'
-import { meetingSyncToApi, syncTencentMeeting } from '../../integrations/tencent-meeting.js'
 
 const createActionSchema = z.object({
   title: z.string().min(1).max(300),
@@ -58,7 +53,6 @@ const completeSchema = z.object({
 
 const failSchema = z.object({ reason: z.string().min(1) })
 const cancelSchema = z.object({ reason: z.string().optional() })
-const meetingSyncSchema = z.object({ meeting_code: z.string().regex(/^\d{9}$/, '腾讯会议号必须是 9 位数字') })
 const acceptSchema = z
   .object({
     create_action: z.boolean().optional(),
@@ -118,36 +112,7 @@ export function registerActionRoutes(app: FastifyInstance): void {
       executions: await listExecutions(getDb(), actionId),
       analysis: await getActionAnalysis(getDb(), projectId, actionId),
       source: await getActionSource(getDb(), projectId, action),
-      meeting_sync: await getActionMeetingSync(getDb(), projectId, actionId),
     }
-  })
-
-  app.post('/api/v1/projects/:projectId/actions/:actionId/meeting-sync', async (request) => {
-    const user = await resolveUser(request)
-    const { projectId, actionId } = request.params as { projectId: string; actionId: string }
-    await requireProjectAccess(getDb(), projectId, user.id, 'member')
-    const action = await getAction(getDb(), projectId, actionId)
-    if (action.kind !== 'meeting') {
-      throw new ApiError('ACTION_INVALID_STATE', '只有会议类型的 Action 才能同步腾讯会议内容')
-    }
-    const body = meetingSyncSchema.parse(request.body ?? {})
-    const token = await getTencentMeetingToken(getDb(), user.id)
-    const synced = await syncTencentMeeting(token, body.meeting_code)
-    const saved = await saveMeetingSync(getDb(), {
-      actionId,
-      meetingCode: synced.meetingCode,
-      meetingId: synced.meetingId,
-      recordFileId: synced.recordFileId,
-      meetingTitle: synced.meetingTitle,
-      startedAt: synced.startedAt,
-      endedAt: synced.endedAt,
-      participants: synced.participants,
-      summary: synced.summary,
-      todo: synced.todo,
-      transcript: synced.transcript,
-      transcriptSegments: synced.transcriptSegments,
-    })
-    return { meeting_sync: meetingSyncToApi(saved) }
   })
 
   /** Agent 提议的 Action,由用户确认后才进入可执行状态 */

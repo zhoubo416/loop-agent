@@ -28,11 +28,6 @@ export const config = {
   agentEngineTimeoutMs: int(process.env.AGENT_ENGINE_TIMEOUT_MS, 120_000),
   agentEngineMaxRetries: int(process.env.AGENT_ENGINE_MAX_RETRIES, 2),
 
-  tencentMeetingMcpUrl: process.env.TENCENT_MEETING_MCP_URL ?? 'https://mcp.meeting.tencent.com',
-  tencentMeetingSkillVersion: process.env.TENCENT_MEETING_SKILL_VERSION ?? '1.0.0',
-  tencentMeetingTokenEncryptionKey: process.env.TENCENT_MEETING_TOKEN_ENCRYPTION_KEY ?? '',
-  tencentMeetingTimeoutMs: int(process.env.TENCENT_MEETING_TIMEOUT_MS, 60_000),
-
   workerEnabled: bool(process.env.WORKER_ENABLED, true),
   workerIntervalMs: int(process.env.WORKER_INTERVAL_MS, 1_000),
   schedulerIntervalMs: int(process.env.SCHEDULER_INTERVAL_MS, 10_000),

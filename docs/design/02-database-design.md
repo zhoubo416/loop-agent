@@ -2043,49 +2043,9 @@ Schedule
 
 ---
 
-# 41. 腾讯会议集成
-
-## 41.1 `user_integrations`
-
-保存用户级第三方服务凭证。当前仅支持 `provider=tencent_meeting`。
-
-| 字段 | 类型 | NULL | 默认值 | 说明 |
-|---|---|---:|---|---|
-| id | uuid | NO | gen_random_uuid() | PK |
-| user_id | uuid | NO | - | 用户 |
-| provider | varchar(50) | NO | - | 集成提供方 |
-| encrypted_token | text | NO | - | AES-256-GCM 密文，不返回前端 |
-| created_at | timestamptz | NO | now() | 创建时间 |
-| updated_at | timestamptz | NO | now() | 更新时间 |
-
-同一个用户和提供方只能有一条凭证。加密密钥只从服务端环境变量读取，不能写入数据库、日志或前端响应。
-
-## 41.2 `action_meeting_syncs`
-
-保存会议 Action 最近一次从腾讯会议同步的内容。它和 `executions` 分工不同：本表保存可反复查看的原始会议资料，Execution 只保存用户确认完成时提交给 Agent 的结构化结果。
-
-| 字段 | 类型 | NULL | 默认值 | 说明 |
-|---|---|---:|---|---|
-| id | uuid | NO | gen_random_uuid() | PK |
-| action_id | uuid | NO | - | 唯一关联一个 meeting Action |
-| meeting_code | varchar(9) | NO | - | 腾讯会议号 |
-| meeting_id | varchar(200) | YES | - | 腾讯会议内部 ID |
-| record_file_id | varchar(200) | YES | - | 云录制文件 ID |
-| meeting_title | varchar(300) | YES | - | 会议标题 |
-| started_at / ended_at | timestamptz | YES | - | 会议开始和结束时间 |
-| participants | jsonb | NO | `[]` | 实际参会人名称列表 |
-| summary | text | YES | - | AI 智能纪要 |
-| todo | text | YES | - | AI 纪要中的待办 |
-| transcript | text | YES | - | 完整逐字稿 |
-| transcript_segments | jsonb | NO | `[]` | 带发言人和时间的逐字稿分段 |
-| synced_at | timestamptz | NO | now() | 最近同步时间 |
-
-`action_id` 唯一约束保证重复点击同步只更新当前快照，不产生重复记录。
-
----
-
 ## 修改历史
 
+- 2026-10-12：移除腾讯会议集成，删除 `user_integrations` 与 `action_meeting_syncs` 表及配套接口；会议 Action 的记录回归手工填写。
 - 2026-10-05：新增第 38 节“可靠性支撑表”，把 `idempotency_keys`、`schedule_occurrences`、`project_locks` 纳入数据模型；这三张表分别是 HTTP 幂等、Schedule 去重和 Project 运行锁的落地方式。
 - 2026-10-05：Action 状态增加 `proposed`，新增第 39 节 `state_proposals` 表，落实人工确认闸门：Agent 的结构性 State 变更与产出的 Action 都先待用户确认。
 - 2026-10-05：新增第 40 节 `notifications` 表，支撑围绕 Agent 判断的通知。

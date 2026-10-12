@@ -1819,19 +1819,6 @@ POST   /api/v1/dev-login
 - Action 带 `kind`（task / meeting / document），`POST /actions` 创建时指定；`POST /actions/{id}/complete` 的 `result.output` 接收该类型对应的结构化字段（会议：participants/decisions/action_items，资料：key_points/content，任务：results/blockers），Runtime 会把结构化结果整理进 Observation。
 - `GET /projects/{project_id}/actions/{action_id}` 额外返回 `source`（来源事件、建议、触发观察与智能体判断）和 `analysis`（该 Action 完成后智能体后续运行的分析结论），供详情页展示“为什么产生这个 Action”和“执行之后智能体怎么看”。
 
-腾讯会议集成接口：
-
-```text
-GET  /api/v1/me/integrations/tencent-meeting
-PUT  /api/v1/me/integrations/tencent-meeting
-POST /api/v1/projects/{project_id}/actions/{action_id}/meeting-sync
-```
-
-- `GET` 只返回 `{ configured }`，不返回 Token。
-- `PUT` 接收 `{ token }`，服务端使用 AES-256-GCM 加密后按用户保存。
-- `POST /meeting-sync` 接收 `{ meeting_code }`，只允许 `kind=meeting` 的 Action。服务端通过腾讯会议 MCP 的只读工具读取会议详情、参会人、录制、逐字稿和智能纪要，并返回 `meeting_sync` 快照。
-- Action 详情响应增加 `meeting_sync`，没有同步记录时为 `null`。完整逐字稿保存在会议同步记录中，不写入 Agent Observation。
-
 登录与注册：
 
 ```text
@@ -1908,6 +1895,7 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-12：移除腾讯会议 Token 配置和 meeting Action 按需同步接口，会议记录回归手工填写。
 - 2026-10-05：新增第 47 节“实现补充的接口”，登记用户清单、Session 列表、Action 失败、手动 Run 同步执行和 Schedule 立即触发这几个实现期补充的接口。
 - 2026-10-05：第 47 节补充 Action 确认/拒绝、State Proposal 应用/拒绝、完成确认约束和开发登录接口，把人工确认闸门纳入对外契约。
 - 2026-10-05：第 47 节补充 timeline 游标分页和归档接口。

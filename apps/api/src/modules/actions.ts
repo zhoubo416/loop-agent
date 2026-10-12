@@ -1,6 +1,5 @@
 import { ApiError } from '../http/errors.js'
 import type { Db, Row } from '../db/client.js'
-import { getMeetingSync, type MeetingSyncRow } from './meeting-sync.js'
 
 export type ActionKind = 'task' | 'meeting' | 'document'
 
@@ -71,16 +70,6 @@ export async function getAction(db: Db, projectId: string, actionId: string): Pr
   const row = result.rows[0]
   if (!row) throw new ApiError('ACTION_NOT_FOUND', 'Action 不存在')
   return row
-}
-
-export async function getActionMeetingSync(
-  db: Db,
-  projectId: string,
-  actionId: string,
-): Promise<MeetingSyncRow | null> {
-  const action = await getAction(db, projectId, actionId)
-  if (action.kind !== 'meeting') return null
-  return getMeetingSync(db, action.id)
 }
 
 export interface ListActionsQuery {
