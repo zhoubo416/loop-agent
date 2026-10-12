@@ -1,0 +1,46 @@
+import path from 'node:path'
+
+const repoRoot = path.resolve(import.meta.dirname, '../../..')
+
+function bool(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value === '') return fallback
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase())
+}
+
+function int(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+export const config = {
+  port: int(process.env.PORT, 4000),
+  host: process.env.HOST ?? '127.0.0.1',
+
+  databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
+  pgliteDataDir: process.env.PGDATA_DIR
+    ? path.resolve(repoRoot, process.env.PGDATA_DIR)
+    : path.resolve(repoRoot, '.data/pglite'),
+
+  agentEngine: (process.env.AGENT_ENGINE ?? 'pi').toLowerCase(),
+  agentEngineBaseUrl: process.env.AGENT_ENGINE_BASE_URL ?? 'https://api.openai.com/v1',
+  agentEngineApiKey: process.env.AGENT_ENGINE_API_KEY ?? '',
+  agentEngineModel: process.env.AGENT_ENGINE_MODEL ?? 'gpt-4o-mini',
+  agentEngineTimeoutMs: int(process.env.AGENT_ENGINE_TIMEOUT_MS, 120_000),
+  agentEngineMaxRetries: int(process.env.AGENT_ENGINE_MAX_RETRIES, 2),
+
+  tencentMeetingMcpUrl: process.env.TENCENT_MEETING_MCP_URL ?? 'https://mcp.meeting.tencent.com',
+  tencentMeetingSkillVersion: process.env.TENCENT_MEETING_SKILL_VERSION ?? '1.0.0',
+  tencentMeetingTokenEncryptionKey: process.env.TENCENT_MEETING_TOKEN_ENCRYPTION_KEY ?? '',
+  tencentMeetingTimeoutMs: int(process.env.TENCENT_MEETING_TIMEOUT_MS, 60_000),
+
+  workerEnabled: bool(process.env.WORKER_ENABLED, true),
+  workerIntervalMs: int(process.env.WORKER_INTERVAL_MS, 1_000),
+  schedulerIntervalMs: int(process.env.SCHEDULER_INTERVAL_MS, 10_000),
+  runLockTtlMs: int(process.env.RUN_LOCK_TTL_MS, 5 * 60_000),
+
+  devUserEmail: process.env.DEV_USER_EMAIL ?? 'dev@loop.local',
+  // 开发环境允许无凭据获取开发用户身份;生产环境关闭
+  allowDevLogin: process.env.NODE_ENV !== 'production',
+}
+
+export type Config = typeof config
