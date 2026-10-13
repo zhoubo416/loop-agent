@@ -91,6 +91,18 @@ export async function listRuns(
   return { items: items.rows, total: Number.parseInt(total.rows[0]?.count ?? '0', 10) }
 }
 
+export async function listRunsBySession(
+  db: Db,
+  sessionId: string,
+  limit = 8,
+): Promise<AgentRunRow[]> {
+  const result = await db.query<AgentRunRow>(
+    `SELECT * FROM agent_runs WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [sessionId, limit],
+  )
+  return result.rows
+}
+
 export async function hasRunningRun(
   db: Db,
   projectId: string,

@@ -99,18 +99,50 @@ test('可以创建 Project,并自动生成当前 State 与 owner 成员', async 
   assert.equal(members.json.items[0].role, 'owner')
 })
 
-test('Chat 触发 Agent,结构性 State 变更进入待确认,Action 先 proposed', async () => {
+test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸门', async () => {
   const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
-    content: '我们已经完成第一轮实验,结果基本符合预期。',
+    content: '我们已经完成第一轮实验,结果基本符合预期,你怎么看?',
   })
-  assert.equal(chat.status, 202)
+  assert.equal(chat.status, 200)
+  assert.match(chat.json.reply, /scripted 讨论回复/)
   assert.ok(chat.json.agent_run_id)
   sessionId = chat.json.session_id
+
+  // 对话流里只有问答,思考结果不混进消息
+  const messages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${sessionId}/messages`,
+  )
+  assert.deepEqual(
+    messages.json.items.map((item: { role: string }) => item.role),
+    ['user', 'assistant'],
+  )
+  assert.equal(messages.json.items[1].content, chat.json.reply)
+
+  // 思考由整段对话记录触发的 conversation Observation
+  const observations = await api('GET', `/api/v1/projects/${projectId}/observations`)
+  assert.equal(observations.json.items.length, 1)
+  assert.equal(observations.json.items[0].type, 'conversation')
+  assert.match(observations.json.items[0].content, /^我:.*\n智能体:/s)
 
   await drainWorker()
 
   const run = await api('GET', `/api/v1/projects/${projectId}/runs/${chat.json.agent_run_id}`)
   assert.equal(run.json.status, 'completed')
+
+  // 右栏思考结果接口返回这次 Run 的判断和产出
+  const insights = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${sessionId}/runs`,
+  )
+  assert.equal(insights.json.items.length, 1)
+  const insight = insights.json.items[0]
+  assert.equal(insight.status, 'completed')
+  assert.match(insight.judgment, /第一轮实验/)
+  assert.equal(insight.state_proposals.length, 1)
+  assert.equal(insight.proposed_actions.length, 1)
+  assert.equal(insight.events.length, 1)
+  assert.equal(insight.recommendations.length, 1)
 
   const state = await api('GET', `/api/v1/projects/${projectId}/state`)
   assert.match(state.json.current_situation, /第一轮实验/)
@@ -131,15 +163,80 @@ test('Chat 触发 Agent,结构性 State 变更进入待确认,Action 先 propose
 
   const recommendations = await api('GET', `/api/v1/projects/${projectId}/recommendations`)
   assert.equal(recommendations.json.items.length, 1)
+})
 
-  const messages = await api(
+test('没有新信息的讨论只给判断,不产出任何项目变更', async () => {
+  const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+    content: '你好呀,最近怎么样?',
+  })
+  assert.equal(chat.status, 200)
+  await drainWorker()
+
+  const insights = await api(
     'GET',
-    `/api/v1/projects/${projectId}/sessions/${sessionId}/messages`,
+    `/api/v1/projects/${projectId}/sessions/${chat.json.session_id}/runs`,
   )
-  assert.deepEqual(messages.json.items.map((item: { role: string }) => item.role), [
-    'user',
-    'assistant',
-  ])
+  assert.equal(insights.json.items.length, 1)
+  const insight = insights.json.items[0]
+  assert.equal(insight.status, 'completed')
+  assert.match(insight.judgment, /没有带来需要记录的新信息/)
+  assert.equal(insight.state_proposals.length, 0)
+  assert.equal(insight.events.length, 0)
+  assert.equal(insight.proposed_actions.length, 0)
+  assert.equal(insight.recommendations.length, 0)
+})
+
+test('多个对话会话互相隔离,列表带预览与消息数', async () => {
+  const sessionsBefore = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions?type=chat`,
+  )
+  const firstId = sessionId
+
+  // 不带 session_id 发消息,创建第二个会话
+  const second = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+    content: '新会话:第二轮实验的方案已经确定了。',
+  })
+  const secondId = second.json.session_id
+  assert.notEqual(secondId, firstId)
+  await drainWorker()
+
+  // 列表带预览与消息数,新会话排在最前
+  const sessions = await api('GET', `/api/v1/projects/${projectId}/sessions?type=chat`)
+  const ids = sessions.json.items.map((item: { id: string }) => item.id)
+  assert.equal(ids[0], secondId)
+  assert.ok(ids.includes(firstId))
+  const secondItem = sessions.json.items[0]
+  assert.equal(secondItem.preview, '新会话:第二轮实验的方案已经确定了。')
+  assert.equal(secondItem.message_count, 2)
+
+  // 两个会话的消息互不串
+  const firstMessages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${firstId}/messages`,
+  )
+  assert.ok(
+    firstMessages.json.items.every((item: { content: string }) =>
+      !item.content.includes('新会话'),
+    ),
+  )
+  const secondMessages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${secondId}/messages`,
+  )
+  assert.equal(secondMessages.json.items.length, 2)
+
+  // 各自的思考结果只属于本会话
+  const secondInsights = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${secondId}/runs`,
+  )
+  assert.ok(secondInsights.json.items.length >= 1)
+  assert.ok(
+    secondInsights.json.items.every((item: { judgment: string | null }) =>
+      !String(item.judgment ?? '').includes('第一轮实验'),
+    ),
+  )
 })
 
 test('应用 State Proposal 后,阶段才真正变更', async () => {
@@ -550,6 +647,9 @@ test('工具注册表提供三个工具,并能读写 tool_calls', async () => {
 test('Agent Run 会把工具执行器传给 Engine,工具副作用真实落库', async () => {
   const capturing: AgentEngine = {
     name: 'tool-capture',
+    async converse() {
+      throw new Error('这个测试不使用对话')
+    },
     async run(input, tools) {
       if (!tools) throw new Error('没有拿到工具执行器')
       const created = (await tools.execute('create_action', {

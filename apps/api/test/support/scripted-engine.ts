@@ -1,5 +1,5 @@
 import type { AgentEngine } from '../../src/agent/engine.js'
-import type { AgentInput, AgentOutput } from '../../src/agent/types.js'
+import type { AgentInput, AgentOutput, ConversationInput } from '../../src/agent/types.js'
 
 const FAILURE_KEYWORDS = ['失败', '异常', '问题', '风险', '差很多']
 const DONE_KEYWORDS = ['完成', '结束', '拿到']
@@ -23,6 +23,10 @@ function contains(text: string, keywords: string[]): boolean {
  */
 export class ScriptedEngine implements AgentEngine {
   readonly name = 'scripted-test-double'
+
+  async converse(input: ConversationInput): Promise<string> {
+    return `(scripted 讨论回复)关于「${input.question}」,结合当前项目状态,建议先核对已有记录再判断。`
+  }
 
   async run(input: AgentInput): Promise<AgentOutput> {
     if (input.trigger.type === 'manual') {
@@ -72,6 +76,12 @@ export class ScriptedEngine implements AgentEngine {
     const summary = truncate(content)
     const isFailure = contains(content, FAILURE_KEYWORDS)
     const isDone = contains(content, DONE_KEYWORDS)
+    const isDecision = contains(content, DECISION_KEYWORDS)
+
+    // 宁缺毋滥:没有新信息的输入只给判断,不产出任何项目变更
+    if (!isFailure && !isDone && !isDecision) {
+      return { judgment: '这轮讨论没有带来需要记录的新信息。' }
+    }
 
     const output: AgentOutput = {
       judgment: isFailure
@@ -79,18 +89,14 @@ export class ScriptedEngine implements AgentEngine {
         : `记录到新的项目信息:${summary}。`,
       events: [
         {
-          type: isFailure ? 'issue_reported' : isDone ? 'progress_completed' : 'note_recorded',
+          type: isFailure ? 'issue_reported' : 'progress_completed',
           title: summary,
           content,
         },
       ],
       stateProposal: {
         currentSituation: summary,
-        ...(isFailure
-          ? { currentStage: '问题排查' }
-          : isDone
-            ? { currentStage: '结果分析' }
-            : {}),
+        ...(isFailure ? { currentStage: '问题排查' } : { currentStage: '结果分析' }),
       },
     }
 
@@ -112,7 +118,7 @@ export class ScriptedEngine implements AgentEngine {
           priority: 'high',
         },
       ]
-    } else if (isDone) {
+    } else {
       output.recommendations = [
         {
           type: 'next_step',
@@ -129,18 +135,9 @@ export class ScriptedEngine implements AgentEngine {
           priority: 'medium',
         },
       ]
-    } else {
-      output.recommendations = [
-        {
-          type: 'next_step',
-          content: '信息已记录,建议明确下一步要做什么。',
-          priority: 'medium',
-          requiresConfirmation: true,
-        },
-      ]
     }
 
-    if (contains(content, DECISION_KEYWORDS)) {
+    if (isDecision) {
       output.memories = [{ type: 'decision', content: summary, confidence: 0.8 }]
     }
     return output

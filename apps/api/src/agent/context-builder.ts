@@ -5,8 +5,9 @@ import { listEvents } from '../modules/events.js'
 import { listRecentExecutions } from '../modules/executions.js'
 import { listMemories } from '../modules/memories.js'
 import { listObservations } from '../modules/observations.js'
+import { listMessages } from '../modules/sessions.js'
 import { getState } from '../modules/states.js'
-import type { AgentInput } from './types.js'
+import type { AgentInput, ConversationInput } from './types.js'
 import { ApiError } from '../http/errors.js'
 
 function iso(value: Date | string | null | undefined): string | undefined {
@@ -119,5 +120,44 @@ export async function buildAgentInput(db: Db, run: AgentRunRow): Promise<AgentIn
       payload: triggerPayload,
     },
     runId: run.id,
+  }
+}
+
+/**
+ * 对话模式的输入组装:只带研究讨论需要的背景,不带完整思考上下文。
+ * 本次问题单独传,history 里不包含它。
+ */
+export async function buildConversationInput(
+  db: Db,
+  projectId: string,
+  sessionId: string,
+  question: string,
+): Promise<ConversationInput> {
+  const projectResult = await db.query<{
+    name: string
+    objective: string
+    description: string | null
+  }>('SELECT name, objective, description FROM projects WHERE id = $1', [projectId])
+  const project = projectResult.rows[0]
+  if (!project) throw new ApiError('PROJECT_NOT_FOUND', 'Project 不存在')
+
+  const state = await getState(db, projectId)
+  const history = (await listMessages(db, sessionId, 20))
+    .filter((row) => row.role === 'user' || row.role === 'assistant')
+    .map((row) => ({ role: row.role as 'user' | 'assistant', content: row.content }))
+
+  return {
+    project: {
+      name: project.name,
+      objective: project.objective,
+      ...(project.description ? { description: project.description } : {}),
+    },
+    state: {
+      ...(state.current_stage ? { currentStage: state.current_stage } : {}),
+      ...(state.current_situation ? { currentSituation: state.current_situation } : {}),
+      openIssues: asStringArray(state.open_issues).map(String),
+    },
+    history,
+    question,
   }
 }

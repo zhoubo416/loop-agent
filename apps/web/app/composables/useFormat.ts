@@ -137,3 +137,16 @@ export function actionDetailPath(
   const segment = action.kind === 'meeting' ? 'meetings' : action.kind === 'document' ? 'documents' : 'tasks'
   return `/projects/${projectId}/${segment}/${action.id}`
 }
+
+/** State 提案的人话摘要,概览与 Chat 思考结果共用 */
+export function proposalSummary(proposal: Record<string, unknown>): string[] {
+  const parts: string[] = []
+  if (proposal.currentStage) parts.push(`阶段 → ${proposal.currentStage}`)
+  const issues = proposal.openIssues
+  if (Array.isArray(issues) && issues.length) parts.push(`开放问题 +${issues.length}`)
+  const risks = proposal.risks
+  if (Array.isArray(risks) && risks.length) parts.push(`风险 +${risks.length}`)
+  const unknowns = proposal.unknowns
+  if (Array.isArray(unknowns) && unknowns.length) parts.push(`未知项 +${unknowns.length}`)
+  return parts.length ? parts : ['状态变更']
+}

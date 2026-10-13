@@ -92,6 +92,30 @@ export interface AgentInput {
   runId: string
 }
 
+export interface ConversationTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+/**
+ * 对话模式的输入:回答用户就项目提出的问题。
+ * 它和思考(AgentInput)分开:对话只产生文本回复,项目变更由思考阶段处理。
+ */
+export interface ConversationInput {
+  project: {
+    name: string
+    objective: string
+    description?: string
+  }
+  state: {
+    currentStage?: string
+    currentSituation?: string
+    openIssues: string[]
+  }
+  history: ConversationTurn[]
+  question: string
+}
+
 export interface StateProposal {
   currentStage?: string
   currentSituation?: string

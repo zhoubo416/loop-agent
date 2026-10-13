@@ -4,7 +4,7 @@ import {
   type AgentToolContext,
 } from '../engine.js'
 import { parseAgentOutput } from '../output-validator.js'
-import type { AgentInput, AgentOutput } from '../types.js'
+import type { AgentInput, AgentOutput, ConversationInput } from '../types.js'
 
 export interface PiEngineOptions {
   baseUrl: string
@@ -15,6 +15,14 @@ export interface PiEngineOptions {
 }
 
 const MAX_TOOL_ROUNDS = 6
+
+const CHAT_SYSTEM_PROMPT = `你是 LOOP 项目里的研究讨论助手,服务于一个长期运行的项目智能体。
+你在和项目负责人就项目本身进行讨论:回答问题、分析原因、给出你的看法。
+
+要求:
+- 基于项目实际情况回答,不知道就明确说不知道,不要编造。
+- 回答用简体中文,先说结论和依据,保持自然的研究讨论语气。
+- 不要在对话里承诺执行项目变更(创建行动、修改状态等);那属于系统的思考阶段,会自动进行。`
 
 const SYSTEM_PROMPT = `你是 LOOP 系统中的 Agent Engine,只负责思考,不直接修改数据库。
 你服务的是一个长期运行的 Project Agent,需要根据项目目标、当前状态、最近的观察和正在进行的行动做出判断。
@@ -36,6 +44,7 @@ const SYSTEM_PROMPT = `你是 LOOP 系统中的 Agent Engine,只负责思考,不
 }
 
 要求:
+- 宁缺毋滥:只有当输入包含对项目有实际价值的新信息(新进展、新问题、新决定、新结论)时,才产出事件、行动、建议和状态变更;寒暄、澄清、没有新信息的讨论只给 judgment,其余字段全部省略。
 - 只提出真正有依据的内容,不要为了填充字段而编造事件或行动。
 - 不要重复已经存在且仍然有效的行动。
 - actions 里的 kind 取值 task / meeting / document:开会、整理资料这类工作要标对 kind,完成时才能采到对应信息。
@@ -95,6 +104,29 @@ export class PIAgentEngine implements AgentEngine {
       final = await this.singleShot(messages)
     }
     return this.parsePIOutput(final)
+  }
+
+  async converse(input: ConversationInput): Promise<string> {
+    const projectLines = [
+      `项目名称:${input.project.name}`,
+      `项目目标:${input.project.objective}`,
+      ...(input.project.description ? [`项目描述:${input.project.description}`] : []),
+      ...(input.state.currentStage ? [`当前阶段:${input.state.currentStage}`] : []),
+      ...(input.state.currentSituation ? [`当前情况:${input.state.currentSituation}`] : []),
+      ...(input.state.openIssues.length
+        ? [`开放问题:${input.state.openIssues.join(';')}`]
+        : []),
+    ]
+    const messages: ChatMessage[] = [
+      { role: 'system', content: `${CHAT_SYSTEM_PROMPT}\n\n${projectLines.join('\n')}` },
+      ...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
+      { role: 'user', content: input.question },
+    ]
+    const response = await this.chat(messages)
+    if (response.content !== undefined) return response.content
+    throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
+      retryable: true,
+    })
   }
 
   async healthCheck(): Promise<{ ok: boolean; detail?: string }> {

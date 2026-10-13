@@ -1,4 +1,4 @@
-import type { AgentInput, AgentOutput } from './types.js'
+import type { AgentInput, AgentOutput, ConversationInput } from './types.js'
 
 export type AgentEngineErrorCode =
   | 'ENGINE_UNAVAILABLE'
@@ -45,5 +45,7 @@ export interface AgentToolContext {
 export interface AgentEngine {
   readonly name: string
   run(input: AgentInput, tools?: AgentToolContext): Promise<AgentOutput>
+  /** 对话模式:基于项目背景回答用户的问题,返回纯文本回复 */
+  converse(input: ConversationInput): Promise<string>
   healthCheck(): Promise<{ ok: boolean; detail?: string }>
 }

@@ -441,7 +441,7 @@ GET /api/v1/projects/{project_id}/sessions/{session_id}/messages
 
 # 12. Chat API
 
-Chat 是用户触发 Agent 最常见的方式。
+Chat 是用户与项目智能体的研究讨论入口，对话和思考分离。
 
 不建议：
 
@@ -454,12 +454,18 @@ POST /chat
 应该：
 
 ```text
-Chat
+用户提问
  ↓
-Observation
+对话回答(同步,基于项目背景)
  ↓
-Agent Run
+“问题 + 回复”组合为 conversation Observation
+ ↓
+Agent Run(异步思考)
+ ↓
+State 提案 / Event / Action 提议 / Recommendation
 ```
+
+对话回复不等思考完成；思考结果由前端在 Chat 页右侧展示，确认操作复用 State 提案、Action 与 Recommendation 的现有接口。
 
 ---
 
@@ -474,24 +480,35 @@ POST /api/v1/projects/{project_id}/chat
 ```json
 {
   "session_id": "session-id",
-  "content": "实验 B 已经完成，但是结果比预期差很多。",
+  "content": "第二轮实验为什么会出现异常？",
   "idempotency_key": "client-request-001"
 }
 ```
 
 ### Response
 
-如果采用异步 Runtime：
-
 ```json
 {
+  "session_id": "session-id",
+  "reply": "结合当前记录，还不能确定原因……",
   "observation_id": "observation-id",
-  "agent_run_id": "run-id",
-  "status": "queued"
+  "agent_run_id": "run-id"
 }
 ```
 
-不要求 HTTP 请求一直等待 LLM 完成。
+`reply` 是这次讨论的即时回复。回复完成后，服务端把这段会话的全部问答记录（“我：… / 智能体：…”逐条）提交为一条 `conversation` Observation 并创建思考 Run；思考坚持宁缺毋滥，没有新信息的讨论只产生判断，不产出事件、提案、行动或建议。对话调用失败时不落任何消息，用户直接重发即可。
+
+---
+
+## 会话的思考结果
+
+```http
+GET /api/v1/projects/{project_id}/sessions/{session_id}/runs
+```
+
+返回该会话最近几次思考 Run 及其产出：`judgment`、待确认 State 提案、新事件、`proposed` 状态的行动提议和 `pending` 状态的建议，供 Chat 页右侧面板展示并直接操作。
+
+`GET /sessions` 的每项额外携带 `preview`（首条 user 消息内容，前端截断作会话标题）与 `message_count`，按创建时间倒序返回（最新在前）；`POST /chat` 不带 `session_id` 即创建新会话，支持一个 Project 下的多段对话。
 
 ---
 
@@ -1895,6 +1912,8 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-13：第 12 节补充多会话支持：`GET /sessions` 携带 `preview` 与 `message_count` 并按创建时间倒序，`POST /chat` 不带 `session_id` 时创建新会话。
+- 2026-10-12：第 12 节 Chat API 更新为“对话 + 思考分离”：`POST /chat` 同步返回讨论回复，回复后自动提交 `conversation` Observation 触发思考；新增 `GET /sessions/{id}/runs` 提供思考结果。
 - 2026-10-12：移除腾讯会议 Token 配置和 meeting Action 按需同步接口，会议记录回归手工填写。
 - 2026-10-05：新增第 47 节“实现补充的接口”，登记用户清单、Session 列表、Action 失败、手动 Run 同步执行和 Schedule 立即触发这几个实现期补充的接口。
 - 2026-10-05：第 47 节补充 Action 确认/拒绝、State Proposal 应用/拒绝、完成确认约束和开发登录接口，把人工确认闸门纳入对外契约。

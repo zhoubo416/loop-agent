@@ -2476,7 +2476,9 @@ Action 完成、失败、取消时，Execution、Action 状态、Observation 和
 
 ## 49.3 Agent Engine 的默认实现
 
-`AgentEngine` 接口只有 `run(input)`，产品代码里只有一个实现：`PIAgentEngine`，走 OpenAI 兼容的 Chat Completions 协议，由 `AGENT_ENGINE_*` 环境变量配置。真实的 PI Agent 服务接入时，只需要改 `PIAgentEngine` 内部的调用和解析，Runtime、Context Builder 和工具层都不受影响。
+`AgentEngine` 接口包含 `run(input)` 与 `converse(input)` 两个方法，产品代码里只有一个实现：`PIAgentEngine`，走 OpenAI 兼容的 Chat Completions 协议，由 `AGENT_ENGINE_*` 环境变量配置。真实的 PI Agent 服务接入时，只需要改 `PIAgentEngine` 内部的调用和解析，Runtime、Context Builder 和工具层都不受影响。
+
+`converse` 是 Chat 的对话能力：Runtime 组装项目背景与最近会话历史，Engine 返回纯文本回复，不产生任何项目变更。`POST /chat` 在一次请求里完成“对话 → 落消息 → 提交 `conversation` Observation”三步；Observation 的内容是这段会话的全部问答记录，思考据此判断项目是否需要变化。思考的产出坚持宁缺毋滥：没有新信息的讨论只产生 judgment，不产出事件、提案、行动或建议，这是对 Engine 输出协议的明确要求。思考 Run 的 judgment 不再回写会话消息，对话流里只有真正的问答，思考结果由前端按 Run 单独拉取展示。
 
 产品运行路径上不存在模拟或占位实现：Agent 产出的每一条 State、Event、Action、Recommendation 都来自真实 Engine。端到端测试需要可复现的输入输出，因此测试目录里自带一个只用于测试的确定性 Engine 替身，通过 `setEngine()` 注入；它不参与任何产品路径，也不进入构建产物。真实 Engine 的连通性由 `test/pi-engine.test.ts` 单独覆盖，需要显式开启。
 
@@ -2514,6 +2516,7 @@ Action 完成、失败、取消时，Execution、Action 状态、Observation 和
 
 ## 修改历史
 
+- 2026-10-12：第 49.3 节更新 Chat 的对话与思考分离：`AgentEngine` 增加 `converse`，对话同步回复后自动提交 `conversation` Observation，judgment 不再回写会话消息。
 - 2026-10-05：新增第 49 节，记录第一版实现中 Worker、事务边界、Agent Engine 和 Tool Calling 的落地方式。
 - 2026-10-05：第 49.3 节改为只描述真实 Engine；确定性实现从产品代码移到测试目录，仅在测试中注入。
 - 2026-10-05：新增第 49.5 节，记录人工确认闸门在 Action、State、Project 完成三条路径上的实现。

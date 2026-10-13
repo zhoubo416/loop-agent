@@ -153,15 +153,20 @@ Output
 
 # 4. AgentEngine 接口
 
-MVP 只定义一个核心方法：
+接口包含思考和对话两种能力：
 
 ```ts
 interface AgentEngine {
-  run(input: AgentInput): Promise<AgentOutput>
+  run(input: AgentInput, tools?: AgentToolContext): Promise<AgentOutput>
+  converse(input: ConversationInput): Promise<string>
+  healthCheck(): Promise<{ ok: boolean; detail?: string }>
 }
 ```
 
 接口不暴露 PI。
+
+- `run()` 是思考：输入完整项目上下文,输出结构化 `AgentOutput`,Runtime 校验后落库。
+- `converse()` 是研究对话:只带项目背景和会话历史,返回纯文本回复,不产生任何项目变更。Chat 页用它回答用户问题;回复完成后,Runtime 把这段会话的全部问答记录组合成一条 `conversation` Observation 再交给思考,思考坚持宁缺毋滥,没有新信息的讨论不产出任何变更。
 
 Runtime 只知道：
 
@@ -171,6 +176,12 @@ AgentInput
 AgentEngine.run()
     ↓
 AgentOutput
+
+ConversationInput
+    ↓
+AgentEngine.converse()
+    ↓
+string
 ```
 
 ---
@@ -1195,6 +1206,7 @@ Tool Calling 已启用：`PIAgentEngine` 在多轮循环里下发 `tools`，把�
 
 ## 修改历史
 
+- 2026-10-12：第 4 节接口增加 `converse`：对话能力与研究讨论对应，返回纯文本回复，项目变更仍只由 `run` 的结构化产出经 Runtime 落库。
 - 2026-10-05：新增第 34 节，记录 Agent Engine 的目录结构、PI 实现方式与 mock 引擎的定位。
 - 2026-10-05：删除 mock 引擎，产品只保留 `PIAgentEngine`；确定性的测试替身移到测试目录，并补充 JSON 输出模式的兼容处理。
 - 2026-10-05：第 34 节更新为 Tool Calling 已启用，记录多轮工具调用循环与 Tool Registry 的分工。

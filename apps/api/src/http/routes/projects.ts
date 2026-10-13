@@ -37,6 +37,9 @@ import { getOverview } from '../../modules/overview.js'
 import { getTimeline } from '../../modules/timeline.js'
 import { submitObservation } from '../../runtime/trigger.js'
 import { withIdempotency } from '../../modules/idempotency.js'
+import { getEngine } from '../../agent/engine-factory.js'
+import { buildConversationInput } from '../../agent/context-builder.js'
+import { listChatRunInsights } from '../../modules/chat-insights.js'
 
 const createProjectSchema = z.object({
   name: z.string().min(1).max(200),
@@ -333,7 +336,16 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     return { items: await listMessages(getDb(), sessionId) }
   })
 
-  app.post('/api/v1/projects/:projectId/chat', async (request, reply) => {
+  /** Chat 页右侧的思考结果:对话触发的 Run 及其产出 */
+  app.get('/api/v1/projects/:projectId/sessions/:sessionId/runs', async (request) => {
+    const user = await resolveUser(request)
+    const { projectId, sessionId } = request.params as { projectId: string; sessionId: string }
+    await requireProjectAccess(getDb(), projectId, user.id)
+    const session = await getSession(getDb(), projectId, sessionId)
+    return { items: await listChatRunInsights(getDb(), session.id) }
+  })
+
+  app.post('/api/v1/projects/:projectId/chat', async (request) => {
     const user = await resolveUser(request)
     const { projectId } = request.params as { projectId: string }
     const body = chatSchema.parse(request.body ?? {})
@@ -346,25 +358,38 @@ export function registerProjectRoutes(app: FastifyInstance): void {
         ? await getSession(db, projectId, body.session_id)
         : await createSession(db, projectId, 'chat', user.id)
 
+      // 对话先行:AI 基于项目背景直接回答。失败时不落任何消息,让用户重发
+      const conversation = await buildConversationInput(db, projectId, session.id, body.content)
+      const engine = getEngine()
+      const reply = await engine.converse(conversation)
+
       await addMessage(db, session.id, 'user', body.content)
+      await addMessage(db, session.id, 'assistant', reply, { engine: engine.name })
+
+      // 回复完成后,把这段对话的全部内容作为一条 Observation 交给思考阶段
+      const history = await listMessages(db, session.id)
+      const conversationText = history
+        .filter((row) => row.role === 'user' || row.role === 'assistant')
+        .map((row) => `${row.role === 'user' ? '我' : '智能体'}:${row.content}`)
+        .join('\n')
       const { observation, run } = await submitObservation({
         projectId,
         userId: user.id,
-        type: 'user_input',
-        content: body.content,
+        type: 'conversation',
+        content: conversationText,
         source: 'chat',
         sessionId: session.id,
+        metadata: { question: body.content, reply },
       })
 
       return {
         session_id: session.id,
+        reply,
         observation_id: observation.id,
         agent_run_id: run?.id ?? null,
-        status: 'queued' as const,
       }
     })
 
-    reply.status(result.replayed ? 200 : 202)
     return { ...result.value, replayed: result.replayed }
   })
 }

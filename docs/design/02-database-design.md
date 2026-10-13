@@ -684,6 +684,7 @@ observations
 
 ```text
 user_input
+conversation
 meeting
 document
 action_result
@@ -692,6 +693,8 @@ schedule
 api
 system
 ```
+
+`conversation` 由 Chat 的研究讨论产生：AI 回复用户问题后，把这段会话的全部问答记录（“我：… / 智能体：…”逐条）作为一条观察交给思考阶段，思考据此判断项目是否需要变化。
 
 ### 索引
 
@@ -2045,6 +2048,7 @@ Schedule
 
 ## 修改历史
 
+- 2026-10-12：`observations.type` 增加 `conversation`（0009），Chat 对话讨论的“问题 + 回复”作为一条观察触发思考。
 - 2026-10-12：移除腾讯会议集成，删除 `user_integrations` 与 `action_meeting_syncs` 表及配套接口；会议 Action 的记录回归手工填写。
 - 2026-10-05：新增第 38 节“可靠性支撑表”，把 `idempotency_keys`、`schedule_occurrences`、`project_locks` 纳入数据模型；这三张表分别是 HTTP 幂等、Schedule 去重和 Project 运行锁的落地方式。
 - 2026-10-05：Action 状态增加 `proposed`，新增第 39 节 `state_proposals` 表，落实人工确认闸门：Agent 的结构性 State 变更与产出的 Action 都先待用户确认。

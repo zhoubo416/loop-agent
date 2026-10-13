@@ -7,7 +7,6 @@ import { parseAgentOutput } from '../agent/output-validator.js'
 import { completeRun, failRun, getRunById, requeueRun } from '../modules/runs.js'
 import { ApiError } from '../http/errors.js'
 import { processAgentOutput } from './output-processor.js'
-import { addMessage } from '../modules/sessions.js'
 import { createAgentToolContext } from '../tools/registry.js'
 import { generateNotifications } from './notify.js'
 
@@ -69,23 +68,6 @@ export async function executeAgentRun(runId: string): Promise<RunOutcome> {
         persisted: result,
       },
     })
-
-    // Chat 场景:把 Agent 的判断回写到 Session,前端轮询 Run 状态后就能看到回复
-    if (run.session_id) {
-      await addMessage(
-        db,
-        run.session_id,
-        'assistant',
-        output.judgment ?? '本次运行没有产生新的判断。',
-        {
-          agent_run_id: run.id,
-          engine: engine.name,
-          events: result.eventIds,
-          actions: result.actionIds,
-          recommendations: result.recommendationIds,
-        },
-      )
-    }
 
     return { runId, status: 'completed' }
   } catch (error) {

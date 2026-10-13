@@ -29,22 +29,6 @@ function label(issue: string | { title?: string }): string {
   return typeof issue === 'string' ? issue : (issue.title ?? JSON.stringify(issue))
 }
 
-function proposalSummary(proposal: Record<string, unknown>): string[] {
-  const parts: string[] = []
-  if (proposal.currentStage) parts.push(`阶段 → ${proposal.currentStage}`)
-  const issues = proposal.openIssues
-  if (Array.isArray(issues) && issues.length) {
-    parts.push(`开放问题 +${issues.length}`)
-  }
-  if (Array.isArray(proposal.risks) && proposal.risks.length) {
-    parts.push(`风险 +${proposal.risks.length}`)
-  }
-  if (Array.isArray(proposal.unknowns) && proposal.unknowns.length) {
-    parts.push(`未知项 +${proposal.unknowns.length}`)
-  }
-  return parts.length ? parts : ['状态变更']
-}
-
 async function withBusy(fn: () => Promise<void>) {
   busy.value = true
   actionError.value = ''
