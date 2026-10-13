@@ -23,7 +23,7 @@ const api = useApi()
 const projectId = computed(() => route.params.id as string)
 
 // 两个请求并行发出,避免串行等待拉长加载时间
-const [{ data, refresh }, { data: users }] = await Promise.all([
+const [{ data, refresh, pending }, { data: users }] = await Promise.all([
   useAsyncData(
     () => `actions-${projectId.value}`,
     () => api.get<{ items: ActionItem[] }>(`/projects/${projectId.value}/actions`),
