@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import MarkdownIt from 'markdown-it'
-
 interface MessageItem {
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
@@ -24,12 +22,6 @@ const {
 
 // 窄屏没有侧边栏会话列表,这条「通知」跟着会话一起排进标签行
 const { unreadCount } = useNotifications(projectId)
-
-// markdown-it 单例:默认不渲染原始 HTML,AI 回复里的 HTML 一律转义
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
-function renderMarkdown(content: string): string {
-  return md.render(content)
-}
 
 const messages = ref<MessageItem[]>([])
 const loadedSessionId = ref<string | null>(null)

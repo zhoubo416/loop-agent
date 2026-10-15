@@ -68,10 +68,14 @@ const filtered = computed(() =>
           <span class="text-xs text-muted">{{ formatDateTime(item.created_at) }}</span>
           <span class="text-xs text-muted">{{ timelineTypeLabels[item.type] ?? item.type }}</span>
           <div class="flex flex-col gap-1">
-            <span>{{ item.title }}</span>
-            <span v-if="item.content && item.content !== item.title" class="text-sm text-muted">
-              {{ item.content }}
-            </span>
+            <!-- eslint-disable-next-line vue/no-v-html -- 标题与正文带 Markdown 格式,markdown-it 已转义原始 HTML -->
+            <div class="lo-md" v-html="renderMarkdown(item.title)"></div>
+            <!-- eslint-disable-next-line vue/no-v-html -- 同上 -->
+            <div
+              v-if="item.content && item.content !== item.title"
+              class="lo-md text-sm text-muted"
+              v-html="renderMarkdown(item.content)"
+            ></div>
             <UBadge v-if="item.status" :color="statusColor(item.status)" variant="soft" class="w-fit">
               {{ statusLabel(item.status) }}
             </UBadge>

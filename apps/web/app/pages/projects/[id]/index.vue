@@ -1,9 +1,13 @@
 <script setup lang="ts">
+/** State 里的跟踪清单,后端原样返回 jsonb,可能是字符串也可能是带 title 的对象 */
+type StateItem = string | { title?: string }
+
 interface Overview {
   project: { id: string; name: string; objective: string; status: string }
   state: { current_stage: string | null; current_situation: string | null; version: number }
-  open_issues: Array<string | { title?: string }>
-  risks: Array<string | { title?: string }>
+  open_issues: StateItem[]
+  risks: StateItem[]
+  unknowns: StateItem[]
   active_actions: Array<{ id: string; title: string; kind: string; priority: string; status: string }>
   recommendations: Array<{ id: string; type: string; content: string; priority: string }>
   proposed_actions: Array<{ id: string; title: string; kind: string; priority: string }>
@@ -25,8 +29,8 @@ const busy = ref(false)
 const agentStatus = ref('')
 const actionError = ref('')
 
-function label(issue: string | { title?: string }): string {
-  return typeof issue === 'string' ? issue : (issue.title ?? JSON.stringify(issue))
+function label(item: StateItem): string {
+  return typeof item === 'string' ? item : (item.title ?? JSON.stringify(item))
 }
 
 async function withBusy(fn: () => Promise<void>) {
@@ -191,50 +195,80 @@ function confirmCompletion(recommendationId: string) {
           <template #header>
             <span class="font-medium">开放问题</span>
           </template>
-          <ul v-if="data.open_issues.length" class="flex list-disc flex-col gap-1 pl-5">
-            <li v-for="(issue, index) in data.open_issues" :key="index">{{ label(issue) }}</li>
-          </ul>
-          <p v-else class="text-sm text-muted">当前没有开放问题。</p>
+          <!-- 内容长了自己滚动,不和并排的卡片互相拉高 -->
+          <div class="max-h-72 overflow-y-auto">
+            <ul v-if="data.open_issues.length" class="flex list-disc flex-col gap-1 pl-5">
+              <li v-for="(issue, index) in data.open_issues" :key="index">{{ label(issue) }}</li>
+            </ul>
+            <p v-else class="text-sm text-muted">当前没有开放问题。</p>
+          </div>
         </UCard>
 
         <UCard>
           <template #header>
             <span class="font-medium">智能体建议</span>
           </template>
-          <div v-if="data.recommendations.length" class="flex flex-col gap-4">
-            <div
-              v-for="item in data.recommendations"
-              :key="item.id"
-              class="flex flex-col gap-3 border-b border-default pb-3 last:border-0 last:pb-0"
-            >
-              <span>{{ item.content }}</span>
-              <div class="flex flex-wrap items-center gap-2">
-                <UBadge :color="priorityColor(item.priority)" variant="soft">
-                  {{ item.priority }}
-                </UBadge>
-                <template v-if="item.type === 'completion'">
-                  <UButton size="xs" :disabled="busy" @click="confirmCompletion(item.id)">
-                    确认完成项目
-                  </UButton>
-                </template>
-                <template v-else>
-                  <UButton size="xs" :disabled="busy" @click="acceptRecommendation(item.id)">
-                    接受并生成行动
-                  </UButton>
-                  <UButton
-                    size="xs"
-                    color="neutral"
-                    variant="ghost"
-                    :disabled="busy"
-                    @click="rejectRecommendation(item.id)"
-                  >
-                    忽略
-                  </UButton>
-                </template>
+          <div class="max-h-72 overflow-y-auto">
+            <div v-if="data.recommendations.length" class="flex flex-col gap-4">
+              <div
+                v-for="item in data.recommendations"
+                :key="item.id"
+                class="flex flex-col gap-3 border-b border-default pb-3 last:border-0 last:pb-0"
+              >
+                <span>{{ item.content }}</span>
+                <div class="flex flex-wrap items-center gap-2">
+                  <UBadge :color="priorityColor(item.priority)" variant="soft">
+                    {{ item.priority }}
+                  </UBadge>
+                  <template v-if="item.type === 'completion'">
+                    <UButton size="xs" :disabled="busy" @click="confirmCompletion(item.id)">
+                      确认完成项目
+                    </UButton>
+                  </template>
+                  <template v-else>
+                    <UButton size="xs" :disabled="busy" @click="acceptRecommendation(item.id)">
+                      接受并生成行动
+                    </UButton>
+                    <UButton
+                      size="xs"
+                      color="neutral"
+                      variant="ghost"
+                      :disabled="busy"
+                      @click="rejectRecommendation(item.id)"
+                    >
+                      忽略
+                    </UButton>
+                  </template>
+                </div>
               </div>
             </div>
+            <p v-else class="text-sm text-muted">智能体暂时没有新的建议。</p>
           </div>
-          <p v-else class="text-sm text-muted">智能体暂时没有新的建议。</p>
+        </UCard>
+      </div>
+
+      <div v-if="data.risks.length || data.unknowns.length" class="mb-4 grid gap-4 md:grid-cols-2">
+        <UCard v-if="data.risks.length">
+          <template #header>
+            <span class="font-medium">风险</span>
+          </template>
+          <!-- 和上面一排一样:内容长了自己滚动 -->
+          <div class="max-h-72 overflow-y-auto">
+            <ul class="flex list-disc flex-col gap-1 pl-5">
+              <li v-for="(item, index) in data.risks" :key="index">{{ label(item) }}</li>
+            </ul>
+          </div>
+        </UCard>
+
+        <UCard v-if="data.unknowns.length">
+          <template #header>
+            <span class="font-medium">未知项</span>
+          </template>
+          <div class="max-h-72 overflow-y-auto">
+            <ul class="flex list-disc flex-col gap-1 pl-5">
+              <li v-for="(item, index) in data.unknowns" :key="index">{{ label(item) }}</li>
+            </ul>
+          </div>
         </UCard>
       </div>
 
@@ -316,7 +350,10 @@ function confirmCompletion(recommendationId: string) {
         <template #header>
           <span class="font-medium">近期动态</span>
         </template>
-        <div v-if="data.recent_activity.length" class="flex flex-col gap-3">
+        <div
+          v-if="data.recent_activity.length"
+          class="flex max-h-96 flex-col gap-3 overflow-y-auto"
+        >
           <div
             v-for="item in data.recent_activity"
             :key="`${item.type}-${item.id}`"
@@ -324,7 +361,8 @@ function confirmCompletion(recommendationId: string) {
           >
             <span class="text-xs text-muted">{{ formatDateTime(item.created_at) }}</span>
             <span class="text-xs text-muted">{{ timelineTypeLabels[item.type] ?? item.type }}</span>
-            <span>{{ item.title }}</span>
+            <!-- eslint-disable-next-line vue/no-v-html -- 动态内容带 Markdown 格式,markdown-it 已转义原始 HTML -->
+            <div class="lo-md text-sm" v-html="renderMarkdown(item.title)"></div>
           </div>
         </div>
         <p v-else class="text-sm text-muted">还没有活动记录。</p>
