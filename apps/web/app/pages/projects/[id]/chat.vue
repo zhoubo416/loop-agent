@@ -33,34 +33,63 @@ function renderMarkdown(content: string): string {
 
 const messages = ref<MessageItem[]>([])
 const loadedSessionId = ref<string | null>(null)
+const loadingSession = ref(false)
 const pinnedDoc = ref<{ id: string; title: string } | null>(null)
 const draft = ref('')
 const sending = ref(false)
 const error = ref('')
 const runStatus = ref('')
 const insights = ref<{ refresh: () => Promise<void> } | null>(null)
+const scrollBox = ref<HTMLElement | null>(null)
 
 function sessionTitle(item: ChatSessionItem): string {
   const text = (item.preview ?? '').replace(/\s+/g, ' ').trim()
   return text.length > 24 ? `${text.slice(0, 24)}…` : text || '历史对话'
 }
 
-async function loadSession(id: string | null, force = false) {
+// 每次加载领一个号,只有最新一次请求能改页面状态,旧的返回一律丢掉
+let loadRound = 0
+
+/**
+ * 加载一段会话的消息
+ *
+ * 换会话时先把上一段对话清空,用骨架屏占住位置,避免旧对话留在屏幕上被当成这一段的内容;
+ * 发送消息后的再次加载用 silent,消息留在原地,等新内容整体替换
+ */
+async function loadSession(
+  id: string | null,
+  options: { force?: boolean; silent?: boolean } = {},
+) {
+  const { force = false, silent = false } = options
   if (!force && id === loadedSessionId.value) return
   // 先记下目标会话,URL 变化触发的重复加载会被挡掉
   loadedSessionId.value = id
-  if (!id) {
+  const round = ++loadRound
+
+  if (!silent) {
     messages.value = []
-    return
+    error.value = ''
+    loadingSession.value = id !== null
   }
+  if (!id) return
+
   try {
     const result = await api.get<{ items: MessageItem[] }>(
       `/projects/${projectId.value}/sessions/${id}/messages`,
     )
+    if (round !== loadRound) return
+    // 收起骨架屏和放入消息在同一次刷新里完成,新对话才落在滚动位置的底端
+    loadingSession.value = false
     messages.value = result.items
+    if (!silent) {
+      // 整段对话刚换过,直接落到最新一条,不做从顶部滑到底部的长动画
+      await nextTick()
+      scrollBox.value?.scrollTo({ top: scrollBox.value.scrollHeight, behavior: 'auto' })
+    }
   } catch (caught) {
+    if (round !== loadRound) return
     loadedSessionId.value = null
-    messages.value = []
+    loadingSession.value = false
     error.value = (caught as Error).message
   }
 }
@@ -87,8 +116,7 @@ watch([sessionId, () => route.query.doc, projectId], async () => {
   await loadSession(sessionId.value)
 })
 
-// 新消息进入后自动滚到消息区底部,保持最新内容可见
-const scrollBox = ref<HTMLElement | null>(null)
+// 消息区里的内容变化后自动滚到底部,保持最新内容可见
 watch(
   () => messages.value.length,
   async () => {
@@ -142,7 +170,7 @@ async function send() {
       if (response.session_id !== sentSessionId) {
         await router.replace({ query: { ...route.query, session: response.session_id } })
       }
-      await loadSession(response.session_id, true)
+      await loadSession(response.session_id, { force: true, silent: true })
     }
     // 对话回复立即进入消息流,思考在后台异步进行
     void refreshSessions()
@@ -232,7 +260,17 @@ async function send() {
             <template v-if="sessionsPending && !sessions.length">
               <USkeleton v-for="n in 3" :key="n" class="h-16 rounded-xl" />
             </template>
-            <p v-else-if="!messages.length" class="text-sm text-muted">
+            <!-- 换会话:上一段对话已经清空,用和消息形状一致的骨架占位 -->
+            <template v-else-if="loadingSession">
+              <USkeleton class="h-12 w-2/3 self-end rounded-2xl rounded-br-sm" />
+              <div class="flex w-full flex-col gap-2">
+                <USkeleton class="h-3 w-24 rounded-full" />
+                <USkeleton class="h-24 w-full rounded-lg" />
+              </div>
+              <USkeleton class="h-12 w-1/2 self-end rounded-2xl rounded-br-sm" />
+            </template>
+            <!-- 加载失败时上面已经有报错,这里不再说「没有消息」 -->
+            <p v-else-if="!messages.length && !error" class="text-sm text-muted">
               {{ sessionId ? '这个会话还没有消息。' : '开始一段新对话,告诉智能体项目现在发生了什么。' }}
             </p>
             <template v-else>

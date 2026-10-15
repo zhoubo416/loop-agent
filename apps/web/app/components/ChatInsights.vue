@@ -15,19 +15,46 @@ const props = defineProps<{ projectId: string; sessionId: string | null }>()
 
 const api = useApi()
 
-const { data, refresh } = useAsyncData(
+/** 一次拉取的结果,连同它属于哪一段会话一起返回 */
+interface InsightPayload {
+  sessionId: string | null
+  items: InsightRun[]
+}
+
+const {
+  data,
+  refresh,
+  status,
+  error: loadError,
+} = useAsyncData<InsightPayload>(
   () => `chat-insights-${props.projectId}-${props.sessionId ?? 'none'}`,
-  () =>
-    props.sessionId
-      ? api.get<{ items: InsightRun[] }>(
-          `/projects/${props.projectId}/sessions/${props.sessionId}/runs`,
-        )
-      : Promise.resolve({ items: [] as InsightRun[] }),
-  { watch: [() => props.sessionId, () => props.projectId] },
+  async () => ({
+    sessionId: props.sessionId,
+    items: props.sessionId
+      ? (
+          await api.get<{ items: InsightRun[] }>(
+            `/projects/${props.projectId}/sessions/${props.sessionId}/runs`,
+          )
+        ).items
+      : [],
+  }),
+  { watch: [() => props.projectId, () => props.sessionId] },
+)
+
+// 换会话时 Nuxt 会把上一段的结果先带进新的 key,所以只认属于当前会话的那一份,
+// 其余一律当成还没加载:上一段的思考结果留在屏幕上会被当成这一段的内容
+const items = computed(() =>
+  data.value?.sessionId === props.sessionId ? data.value.items : [],
+)
+const loading = computed(
+  () => !items.value.length && ['pending', 'idle'].includes(status.value),
 )
 
 const busy = ref(false)
 const error = ref('')
+
+// 拉取失败和操作失败都在这条提示里说
+const message = computed(() => error.value || loadError.value?.message || '')
 
 async function withBusy(fn: () => Promise<void>) {
   if (busy.value) return
@@ -96,14 +123,19 @@ defineExpose({ refresh })
       <span class="text-xs text-muted">对话触发的项目思考</span>
     </div>
 
-    <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-3 shrink-0" />
+    <UAlert v-if="message" color="error" variant="soft" :title="message" class="mb-3 shrink-0" />
 
     <div class="min-h-0 flex-1 overflow-y-auto p-1">
-      <p v-if="!(data?.items ?? []).length" class="text-sm text-muted">
+      <!-- 换会话:上一段的思考结果已经让位,用和卡片形状一致的骨架占位 -->
+      <div v-if="loading" class="flex flex-col gap-3">
+        <USkeleton v-for="n in 2" :key="n" class="h-28 rounded-lg" />
+      </div>
+      <!-- 加载失败时上面已经有报错,这里不再说「还没有思考结果」 -->
+      <p v-else-if="!items.length && !message" class="text-sm text-muted">
         还没有思考结果。发送消息后,智能体会基于这轮讨论判断项目状态。
       </p>
       <div v-else class="flex flex-col gap-3">
-        <UCard v-for="item in data?.items ?? []" :key="item.id" :ui="{ body: 'sm:p-3' }">
+        <UCard v-for="item in items" :key="item.id" :ui="{ body: 'sm:p-3' }">
           <div class="flex items-center justify-between gap-2">
             <span class="text-xs text-muted">{{ formatDateTime(item.created_at) }}</span>
             <UBadge :color="statusColor(item.status)" variant="soft">
