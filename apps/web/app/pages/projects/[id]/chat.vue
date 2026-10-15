@@ -22,6 +22,9 @@ const {
   refresh: refreshSessions,
 } = useChatSessions(projectId)
 
+// 窄屏没有侧边栏会话列表,这条「通知」跟着会话一起排进标签行
+const { unreadCount } = useNotifications(projectId)
+
 // markdown-it 单例:默认不渲染原始 HTML,AI 回复里的 HTML 一律转义
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 function renderMarkdown(content: string): string {
@@ -98,6 +101,10 @@ watch(
 function switchSession(id: string) {
   if (id === sessionId.value) return
   void navigateTo({ path: route.path, query: { session: id } })
+}
+
+function openNotifications() {
+  void navigateTo(`/projects/${projectId.value}/notifications`)
 }
 
 async function send() {
@@ -188,6 +195,16 @@ async function send() {
           >
             新对话
           </UButton>
+          <UBadge
+            icon="i-lucide-bell"
+            variant="subtle"
+            color="primary"
+            class="shrink-0 cursor-pointer"
+            title="通知"
+            @click="openNotifications()"
+          >
+            通知{{ unreadCount ? ` ${unreadCount}` : '' }}
+          </UBadge>
           <template v-if="sessionsPending && !sessions.length">
             <USkeleton
               v-for="n in 3"

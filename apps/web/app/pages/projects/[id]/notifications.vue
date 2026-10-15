@@ -1,42 +1,9 @@
 <script setup lang="ts">
-interface NotificationItem {
-  id: string
-  type: string
-  severity: string
-  title: string
-  content: string
-  project_name: string
-  status: string
-  created_at: string
-}
+const route = useRoute()
+const projectId = computed(() => route.params.id as string)
 
-const api = useApi()
-
-const { data, refresh, pending } = await useAsyncData('notifications', () =>
-  api.get<{ items: NotificationItem[]; unread_count: number }>('/notifications'),
-)
-
-const busy = ref(false)
-
-async function readOne(id: string) {
-  busy.value = true
-  try {
-    await api.post(`/notifications/${id}/read`, {})
-    await refresh()
-  } finally {
-    busy.value = false
-  }
-}
-
-async function readAll() {
-  busy.value = true
-  try {
-    await api.post('/notifications/read-all', {})
-    await refresh()
-  } finally {
-    busy.value = false
-  }
-}
+// 这一页只列当前项目的通知,和侧边栏会话列表里的那条「通知」共用同一份数据
+const { items, unreadCount, pending, busy, read, readAll } = useNotifications(projectId)
 </script>
 
 <template>
@@ -49,19 +16,19 @@ async function readAll() {
       <UButton
         color="neutral"
         variant="outline"
-        :disabled="busy || !(data?.unread_count ?? 0)"
+        :disabled="busy || !unreadCount"
         @click="readAll"
       >
         全部已读
       </UButton>
     </div>
 
-    <div v-if="pending && !data" class="flex flex-col gap-3">
+    <div v-if="pending && !items.length" class="flex flex-col gap-3">
       <USkeleton v-for="n in 4" :key="n" class="h-20 rounded-lg" />
     </div>
-    <div v-else-if="data?.items.length" class="flex flex-col gap-3">
+    <div v-else-if="items.length" class="flex flex-col gap-3">
       <UCard
-        v-for="item in data.items"
+        v-for="item in items"
         :key="item.id"
         :variant="item.status === 'unread' ? 'soft' : 'outline'"
         :ui="{ body: 'sm:p-4' }"
@@ -73,7 +40,6 @@ async function readAll() {
                 {{ item.severity }}
               </UBadge>
               <span class="font-medium">{{ item.title }}</span>
-              <span class="text-xs text-muted">{{ item.project_name }}</span>
             </div>
             <p class="text-sm">{{ item.content }}</p>
             <p class="mt-1 text-xs text-muted">{{ formatDateTime(item.created_at) }}</p>
@@ -84,7 +50,7 @@ async function readAll() {
             color="neutral"
             variant="ghost"
             :disabled="busy"
-            @click="readOne(item.id)"
+            @click="read(item.id)"
           >
             已读
           </UButton>

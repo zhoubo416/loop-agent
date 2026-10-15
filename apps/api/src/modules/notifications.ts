@@ -58,16 +58,21 @@ export async function ensureNotification(
   return result.rows[0]!
 }
 
+/** 传 projectId 时只看这个项目的通知,不传就是当前用户所有项目的通知 */
 export async function listNotificationsForUser(
   db: Db,
   userId: string,
-  options: { status?: string; limit?: number; offset?: number } = {},
+  options: { status?: string; projectId?: string; limit?: number; offset?: number } = {},
 ): Promise<Array<NotificationRow & { project_name: string }>> {
   const params: unknown[] = [userId]
   let where = 'WHERE pu.user_id = $1'
   if (options.status) {
     params.push(options.status)
     where += ` AND n.status = $${params.length}`
+  }
+  if (options.projectId) {
+    params.push(options.projectId)
+    where += ` AND n.project_id = $${params.length}`
   }
   params.push(options.limit ?? 50, options.offset ?? 0)
   const result = await db.query<NotificationRow & { project_name: string }>(
@@ -83,13 +88,23 @@ export async function listNotificationsForUser(
   return result.rows
 }
 
-export async function unreadCountForUser(db: Db, userId: string): Promise<number> {
+export async function unreadCountForUser(
+  db: Db,
+  userId: string,
+  projectId?: string,
+): Promise<number> {
+  const params: unknown[] = [userId]
+  let where = "WHERE pu.user_id = $1 AND n.status = 'unread'"
+  if (projectId) {
+    params.push(projectId)
+    where += ` AND n.project_id = $${params.length}`
+  }
   const result = await db.query<{ count: string }>(
     `SELECT count(*)::text AS count
      FROM notifications n
      JOIN project_users pu ON pu.project_id = n.project_id
-     WHERE pu.user_id = $1 AND n.status = 'unread'`,
-    [userId],
+     ${where}`,
+    params,
   )
   return Number.parseInt(result.rows[0]?.count ?? '0', 10)
 }
@@ -112,13 +127,24 @@ export async function markNotificationRead(
   return row
 }
 
-export async function markAllRead(db: Db, userId: string): Promise<number> {
+/** 和未读数一样,传 projectId 时只把那个项目的通知标为已读 */
+export async function markAllRead(
+  db: Db,
+  userId: string,
+  projectId?: string,
+): Promise<number> {
+  const params: unknown[] = [userId]
+  let where = "WHERE pu.project_id = n.project_id AND pu.user_id = $1 AND n.status = 'unread'"
+  if (projectId) {
+    params.push(projectId)
+    where += ` AND n.project_id = $${params.length}`
+  }
   const result = await db.query(
     `UPDATE notifications n
      SET status = 'read', read_at = now()
      FROM project_users pu
-     WHERE pu.project_id = n.project_id AND pu.user_id = $1 AND n.status = 'unread'`,
-    [userId],
+     ${where}`,
+    params,
   )
   return result.rowCount
 }

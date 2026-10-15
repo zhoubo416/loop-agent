@@ -13,17 +13,24 @@ const { data: projects, refresh } = await useAsyncData('layout-projects', () =>
   api.get<{ items: ProjectItem[] }>('/projects'),
 )
 
-const { data: unread, refresh: refreshUnread } = await useAsyncData(
-  'unread-count',
-  () => api.get<{ count: number }>('/notifications/unread-count'),
-)
-
 const currentProjectId = computed(() => route.params.id as string | undefined)
 const currentProject = computed(
   () => (projects.value?.items ?? []).find((item) => item.id === currentProjectId.value) ?? null,
 )
 
 const { sessions, pending: sessionsPending } = useChatSessions(currentProjectId)
+
+// 通知是会话列表里的特殊一项:未读数直接标在那一行上,和通知页共用同一份数据
+const {
+  unreadCount,
+  pending: notificationsPending,
+  refresh: refreshNotifications,
+} = useNotifications(currentProjectId)
+
+const notificationsHref = computed(() =>
+  currentProjectId.value ? `/projects/${currentProjectId.value}/notifications` : '',
+)
+const onNotifications = computed(() => route.path === notificationsHref.value)
 
 // 当前会话以 URL 为准,和 Chat 页共用同一条约定:带 session 参数就是那一段对话
 const activeSessionId = computed(() => (route.query.session as string | undefined) || null)
@@ -74,7 +81,7 @@ watch(
   () => route.fullPath,
   () => {
     if (!route.params.id) void refresh()
-    void refreshUnread()
+    void refreshNotifications()
   },
 )
 
@@ -112,21 +119,11 @@ function logout() {
         </UButton>
       </UDropdownMenu>
 
-      <NuxtLink
-        to="/notifications"
-        class="flex items-center justify-between rounded-lg border border-default px-3 py-2 text-sm hover:bg-elevated"
-      >
-        <span>通知</span>
-        <UBadge v-if="(unread?.count ?? 0) > 0" color="primary" variant="soft">
-          {{ unread?.count }}
-        </UBadge>
-      </NuxtLink>
-
       <UNavigationMenu :items="navItems" orientation="vertical" />
 
-      <!-- 对话:会话列表,在任意页面都能直接切到某一段讨论 -->
+      <!-- 对话:通知置顶,下面是这个项目的会话列表 -->
       <div v-if="currentProjectId" class="lo-sidebar-chat">
-        <div class="flex items-center justify-between gap-2">
+        <div class="flex shrink-0 items-center justify-between gap-2">
           <NuxtLink :to="chatHref" class="text-xs text-muted transition-colors hover:text-default">
             对话
           </NuxtLink>
@@ -140,6 +137,22 @@ function logout() {
             aria-label="新对话"
           />
         </div>
+
+        <!-- 通知是会话列表里的一条特殊会话:它不属于某一段讨论,但和会话一样点开就进内容 -->
+        <NuxtLink
+          :to="notificationsHref"
+          class="shrink-0 rounded-lg px-2.5 py-2 text-sm transition-colors"
+          :class="onNotifications ? 'bg-primary/10 font-medium' : 'hover:bg-elevated/60'"
+        >
+          <span class="flex items-center gap-2">
+            <UIcon name="i-lucide-bell" class="size-4 shrink-0 text-muted" />
+            <span class="min-w-0 flex-1 truncate">通知</span>
+          </span>
+          <span class="mt-0.5 block pl-6 text-[11px] text-muted">
+            <USkeleton v-if="notificationsPending && !unreadCount" class="h-3 w-16 rounded-full" />
+            <template v-else>{{ unreadCount ? `${unreadCount} 条未读` : '暂无未读' }}</template>
+          </span>
+        </NuxtLink>
 
         <div class="lo-sidebar-sessions">
           <template v-if="sessionsPending && !sessions.length">

@@ -754,6 +754,46 @@ test('Agent 产出建议后生成通知,并可标记已读', async () => {
   assert.equal(zero.json.count, 0)
 })
 
+test('通知可以只看某个 Project,已读操作也只影响这个 Project', async () => {
+  const created = await api('POST', '/api/v1/projects', {
+    name: '通知范围测试',
+    objective: '验证通知按项目收窄。',
+  })
+  const otherProject = created.json.id as string
+  await getDb().query(
+    `INSERT INTO notifications (project_id, type, severity, title, content)
+     VALUES ($1, 'risk', 'warning', '另一个项目的通知', '只该出现在它自己的项目里')`,
+    [otherProject],
+  )
+
+  const other = await api('GET', `/api/v1/notifications/unread-count?project_id=${otherProject}`)
+  assert.equal(other.json.count, 1)
+
+  const scoped = await api('GET', `/api/v1/notifications?project_id=${otherProject}`)
+  assert.equal(scoped.json.items.length, 1)
+  assert.equal(scoped.json.items[0].project_id, otherProject)
+  assert.equal(scoped.json.unread_count, 1)
+
+  // 自己没参与的项目看不到任何通知
+  const stranger = await api(
+    'POST',
+    '/api/v1/projects',
+    { name: '别人的项目', objective: '验证通知不跨人可见。' },
+    { 'x-user-id': secondUserId },
+  )
+  const denied = await api('GET', `/api/v1/notifications?project_id=${stranger.json.id}`)
+  assert.equal(denied.json.items.length, 0)
+  assert.equal(denied.json.unread_count, 0)
+
+  // 在某个项目里点「全部已读」,别的项目不受影响
+  const mineBefore = await api('GET', `/api/v1/notifications/unread-count?project_id=${projectId}`)
+  await api('POST', '/api/v1/notifications/read-all', { project_id: otherProject })
+  const otherAfter = await api('GET', `/api/v1/notifications/unread-count?project_id=${otherProject}`)
+  assert.equal(otherAfter.json.count, 0)
+  const mineAfter = await api('GET', `/api/v1/notifications/unread-count?project_id=${projectId}`)
+  assert.equal(mineAfter.json.count, mineBefore.json.count)
+})
+
 test('注册、登录、token 鉴权与登出', async () => {
   const register = await app.inject({
     method: 'POST',

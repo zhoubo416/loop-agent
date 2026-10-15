@@ -1835,7 +1835,7 @@ POST   /api/v1/dev-login
 - `POST /dev-login` 只在开发环境开放，用于前端拿到开发用户身份。业务接口不再对无 `X-User-Id` 的请求做身份回落。
 - `GET /projects/{project_id}/timeline` 支持 `cursor` 游标分页，响应带 `next_cursor`。
 - `POST /projects/{project_id}/archive` 把 Project 置为 `archived`，之后不再接受新的触发。
-- `GET /notifications`、`POST /notifications/{id}/read`、`POST /notifications/read-all` 提供跨 Project 的通知列表与已读操作，`GET /notifications/unread-count` 返回未读数。
+- `GET /notifications`、`POST /notifications/{id}/read`、`POST /notifications/read-all` 提供跨 Project 的通知列表与已读操作，`GET /notifications/unread-count` 返回未读数。列表、未读数和 read-all 都接受 `project_id`（read-all 放在请求体里）：带上它就把范围收窄到这一个 Project，未读数也只算这一个，不带就是当前用户所有 Project。收窄仍然建立在成员校验之上，自己没参与的 Project 拿不到任何通知。
 - Action 带 `kind`（task / meeting / document），`POST /actions` 创建时指定；`POST /actions/{id}/complete` 的 `result.output` 接收该类型对应的结构化字段（会议：participants/decisions/action_items，资料：key_points/content，任务：results/blockers），Runtime 会把结构化结果整理进 Observation。
 - `GET /projects/{project_id}/actions/{action_id}` 额外返回 `source`（来源事件、建议、触发观察与智能体判断）和 `analysis`（该 Action 完成后智能体后续运行的分析结论），供详情页展示“为什么产生这个 Action”和“执行之后智能体怎么看”。
 
@@ -1932,6 +1932,7 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-15：第 47 节的通知接口补充 `project_id` 范围参数，列表、未读数与 read-all 都可以只看一个 Project。
 - 2026-10-14：第 47 节补充资料文档接口（上传、URL 导入、文件下载、删除）与 `POST /organize` AI 整理接口；第 12 节 Chat 请求增加可选 `document_id`，支持把资料文本作为对话上下文。
 - 2026-10-13：第 12 节补充多会话支持：`GET /sessions` 携带 `preview` 与 `message_count` 并按创建时间倒序，`POST /chat` 不带 `session_id` 时创建新会话。
 - 2026-10-12：第 12 节 Chat API 更新为“对话 + 思考分离”：`POST /chat` 同步返回讨论回复，回复后自动提交 `conversation` Observation 触发思考；新增 `GET /sessions/{id}/runs` 提供思考结果。
