@@ -68,12 +68,12 @@ const projectMenuItems = computed(() => {
 
 const navItems = computed(() => {
   const id = currentProjectId.value
-  if (!id) return [{ label: '项目', to: '/' }]
+  if (!id) return [{ label: '项目', to: '/', icon: 'i-lucide-layout-grid' }]
   return [
-    { label: '概览', to: `/projects/${id}` },
-    { label: '时间线', to: `/projects/${id}/timeline` },
-    { label: '行动', to: `/projects/${id}/actions` },
-    { label: '设置', to: `/projects/${id}/settings` },
+    { label: '概览', to: `/projects/${id}`, icon: 'i-lucide-layout-dashboard' },
+    { label: '时间线', to: `/projects/${id}/timeline`, icon: 'i-lucide-history' },
+    { label: '行动', to: `/projects/${id}/actions`, icon: 'i-lucide-list-checks' },
+    { label: '设置', to: `/projects/${id}/settings`, icon: 'i-lucide-settings' },
   ]
 })
 
@@ -169,8 +169,13 @@ function logout() {
               "
               :title="session.preview || '历史对话'"
             >
-              <span class="line-clamp-2 break-words">{{ session.preview || '历史对话' }}</span>
-              <span class="mt-0.5 block text-[11px] text-muted">
+              <span class="flex items-start gap-2">
+                <UIcon name="i-lucide-message-square" class="mt-0.5 size-4 shrink-0 text-muted" />
+                <span class="line-clamp-2 min-w-0 flex-1 break-words">
+                  {{ session.preview || '历史对话' }}
+                </span>
+              </span>
+              <span class="mt-0.5 block pl-6 text-[11px] text-muted">
                 {{ formatDateTime(session.created_at) }} · {{ session.message_count }} 条
               </span>
             </NuxtLink>
