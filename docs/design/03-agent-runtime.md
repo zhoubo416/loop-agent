@@ -825,14 +825,12 @@ UI 可以展示：
 
 ```json
 {
-  "judgment": {
-    "content": "实验 B 已完成，但目前还无法判断结果是否支持当前假设"
-  },
+  "judgment": "实验 B 已完成，但结果还不足以支持当前假设，需要先分析数据。",
 
   "events": [
     {
       "title": "实验 B 完成",
-      "content": "实验 B 已完成",
+      "content": "实验 B 已完成，等待数据分析。",
       "type": "experiment_completed"
     }
   ],
@@ -840,7 +838,7 @@ UI 可以展示：
   "actions": [
     {
       "title": "分析实验 B 数据",
-      "description": "对实验 B 数据进行统计分析",
+      "description": "对实验 B 数据做统计分析。",
       "executor_type": "human",
       "priority": "high"
     }
@@ -849,19 +847,21 @@ UI 可以展示：
   "recommendations": [
     {
       "type": "next_step",
-      "content": "建议先完成实验 B 数据分析",
+      "content": "先完成实验 B 数据分析。",
       "requires_confirmation": true
     }
   ],
 
   "state_patch": {
     "current_stage": "数据分析",
-    "current_situation": "实验 B 已完成，等待数据分析"
+    "current_situation": "实验 B 已完成，等待数据分析。"
   },
 
   "memories": []
 }
 ```
+
+这份输出是给用户读的：用户需要知道的只有**为什么产生这些变更**和**产生了什么**，所以协议里的每个字段都要短——`judgment` 一句话说清依据和结论，事件、行动、建议、开放问题、风险、未知项各一句话，`current_situation` 两三句话。长度由 Engine 的 system prompt 约束（见 Adapter 设计的 13.1），Runtime 只做校验，不做事后截断。
 
 ---
 
@@ -2526,6 +2526,7 @@ Action 完成、失败、取消时，Execution、Action 状态、Observation 和
 
 ## 修改历史
 
+- 2026-10-15：第 19 节 Agent Output Protocol 补充输出长度要求：这份输出是给用户读的，只要“为什么产生这些变更”和“产生了什么”，各字段都要短，长度由 Engine 的 system prompt 约束，Runtime 不做事后截断。
 - 2026-10-14：新增第 49.9 节，记录资料文档的文本提取、文档对话、AI 整理（`organize` 模式）与完成提交的边界：上传/导入/整理不触发思考，提交时 Observation 附加文档名。
 - 2026-10-12：第 49.3 节更新 Chat 的对话与思考分离：`AgentEngine` 增加 `converse`，对话同步回复后自动提交 `conversation` Observation，judgment 不再回写会话消息。
 - 2026-10-05：新增第 49 节，记录第一版实现中 Worker、事务边界、Agent Engine 和 Tool Calling 的落地方式。
