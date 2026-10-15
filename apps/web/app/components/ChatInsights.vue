@@ -16,14 +16,14 @@ const props = defineProps<{ projectId: string; sessionId: string | null }>()
 const api = useApi()
 
 const { data, refresh } = useAsyncData(
-  () => `chat-insights-${props.sessionId ?? 'none'}`,
+  () => `chat-insights-${props.projectId}-${props.sessionId ?? 'none'}`,
   () =>
     props.sessionId
       ? api.get<{ items: InsightRun[] }>(
           `/projects/${props.projectId}/sessions/${props.sessionId}/runs`,
         )
       : Promise.resolve({ items: [] as InsightRun[] }),
-  { watch: [() => props.sessionId] },
+  { watch: [() => props.sessionId, () => props.projectId] },
 )
 
 const busy = ref(false)

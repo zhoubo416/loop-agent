@@ -9,6 +9,7 @@ interface ProjectItem {
 }
 
 const api = useApi()
+const route = useRoute()
 const { data, refresh, pending } = await useAsyncData('project-list', () =>
   api.get<{ items: ProjectItem[]; total: number }>('/projects'),
 )
@@ -16,7 +17,8 @@ const { data, refresh, pending } = await useAsyncData('project-list', () =>
 const form = reactive({ name: '', objective: '', description: '' })
 const submitting = ref(false)
 const error = ref('')
-const showForm = ref(false)
+// 侧边栏项目下拉的「新建项目」带 ?new=1 进来,直接展开表单
+const showForm = ref(route.query.new === '1')
 
 async function createProject() {
   error.value = ''

@@ -11,7 +11,7 @@ body {
 }
 
 /* 聊天页占满一屏:头部与输入区固定,中间消息区自己纵向滚动。
-   页面本身不用 UContainer,三栏直接拉满 .lo-main 的内容区宽度;
+   内容宽度交给页面里的 UContainer,和行动、时间线等页面一致;
    高度减去的 92px 是 .lo-main 的上下内边距(28 + 64) */
 .lo-chat-shell {
   height: calc(100vh - 92px);
@@ -19,11 +19,10 @@ body {
   flex-direction: column;
 }
 
-/* 三栏放不下时退出聊天室模式,恢复页面滚动,思考结果排在对话下方 */
+/* 两栏放不下时退出聊天室模式,恢复页面滚动,思考结果排在对话下方 */
 @media (max-width: 1023px) {
   .lo-chat-shell {
     height: auto;
-    max-width: none;
   }
 }
 
@@ -42,6 +41,34 @@ body {
   gap: 20px;
   overflow-y: auto;
   background: var(--ui-bg);
+}
+
+/* 高度不够时整条侧边栏滚动,品牌、下拉和导航不跟着压缩 */
+.lo-sidebar > :not(.lo-sidebar-chat) {
+  flex-shrink: 0;
+}
+
+/* 侧边栏下半段的会话列表:吃掉剩余高度,列表长了自己滚动 */
+.lo-sidebar-chat {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lo-sidebar-sessions {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+/* 会话标签行只在窄屏出现:那时侧边栏不显示会话列表 */
+.lo-session-tabs {
+  display: none;
 }
 
 .lo-main {
@@ -227,6 +254,13 @@ body {
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--ui-border);
+  }
+  /* 顶栏里不铺会话列表,历史对话交给对话页顶部的标签行 */
+  .lo-sidebar-chat {
+    display: none;
+  }
+  .lo-session-tabs {
+    display: flex;
   }
   .lo-main {
     padding: 20px 16px 56px;

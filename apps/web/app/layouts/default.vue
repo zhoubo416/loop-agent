@@ -19,13 +19,51 @@ const { data: unread, refresh: refreshUnread } = await useAsyncData(
 )
 
 const currentProjectId = computed(() => route.params.id as string | undefined)
+const currentProject = computed(
+  () => (projects.value?.items ?? []).find((item) => item.id === currentProjectId.value) ?? null,
+)
+
+const { sessions, pending: sessionsPending } = useChatSessions(currentProjectId)
+
+// 当前会话以 URL 为准,和 Chat 页共用同一条约定:带 session 参数就是那一段对话
+const activeSessionId = computed(() => (route.query.session as string | undefined) || null)
+
+// 「对话」接着最近一段聊,一段都没有时落到空白对话
+const chatHref = computed(() => {
+  const id = currentProjectId.value
+  if (!id) return '/'
+  const target = activeSessionId.value ?? sessions.value[0]?.id
+  return target ? `/projects/${id}/chat?session=${target}` : `/projects/${id}/chat`
+})
+
+function projectSummary(project: ProjectItem): string {
+  return [statusLabel(project.status), project.current_stage].filter(Boolean).join(' · ')
+}
+
+const projectMenuItems = computed(() => {
+  const items = (projects.value?.items ?? []).map((project) => ({
+    // 用 checkbox 项才能显示当前项目的勾选,勾选由 URL 决定,点击只做切换
+    label: project.name,
+    description: projectSummary(project),
+    type: 'checkbox' as const,
+    checked: project.id === currentProjectId.value,
+    onSelect: () => {
+      void navigateTo(`/projects/${project.id}`)
+    },
+  }))
+  return [
+    ...items,
+    ...(items.length ? [{ type: 'separator' as const }] : []),
+    { label: '全部项目', icon: 'i-lucide-layout-list', to: '/' },
+    { label: '新建项目', icon: 'i-lucide-plus', to: '/?new=1' },
+  ]
+})
 
 const navItems = computed(() => {
   const id = currentProjectId.value
   if (!id) return [{ label: '项目', to: '/' }]
   return [
     { label: '概览', to: `/projects/${id}` },
-    { label: '对话', to: `/projects/${id}/chat` },
     { label: '时间线', to: `/projects/${id}/timeline` },
     { label: '行动', to: `/projects/${id}/actions` },
     { label: '设置', to: `/projects/${id}/settings` },
@@ -55,6 +93,25 @@ function logout() {
         <div class="text-xs text-muted">一个项目,就是一个智能体</div>
       </NuxtLink>
 
+      <!-- 左上角:当前项目与项目切换 -->
+      <UDropdownMenu :items="projectMenuItems" :content="{ align: 'start' }" class="w-full">
+        <UButton color="neutral" variant="outline" block class="justify-between gap-2 py-2">
+          <span class="flex min-w-0 flex-col items-start text-left">
+            <span class="w-full truncate text-sm font-medium">
+              {{ currentProject?.name ?? '选择项目' }}
+            </span>
+            <span class="w-full truncate text-xs text-muted">
+              {{
+                currentProject
+                  ? projectSummary(currentProject)
+                  : `${projects?.items.length ?? 0} 个项目`
+              }}
+            </span>
+          </span>
+          <UIcon name="i-lucide-chevron-down" class="size-4 shrink-0 text-muted" />
+        </UButton>
+      </UDropdownMenu>
+
       <NuxtLink
         to="/notifications"
         class="flex items-center justify-between rounded-lg border border-default px-3 py-2 text-sm hover:bg-elevated"
@@ -67,26 +124,46 @@ function logout() {
 
       <UNavigationMenu :items="navItems" orientation="vertical" />
 
-      <div class="flex flex-col gap-2">
-        <div class="text-xs text-muted">我的项目</div>
-        <UButton
-          v-for="project in projects?.items ?? []"
-          :key="project.id"
-          :to="`/projects/${project.id}`"
-          :variant="project.id === currentProjectId ? 'soft' : 'ghost'"
-          color="neutral"
-          block
-          class="justify-start"
-        >
-          <span class="flex min-w-0 flex-col items-start text-left">
-            <span class="truncate text-sm font-medium">{{ project.name }}</span>
-            <span class="text-xs text-muted">
-              {{ statusLabel(project.status) }}
-              <template v-if="project.current_stage"> · {{ project.current_stage }}</template>
-            </span>
-          </span>
-        </UButton>
-        <div v-if="!(projects?.items ?? []).length" class="text-xs text-muted">还没有项目</div>
+      <!-- 对话:会话列表,在任意页面都能直接切到某一段讨论 -->
+      <div v-if="currentProjectId" class="lo-sidebar-chat">
+        <div class="flex items-center justify-between gap-2">
+          <NuxtLink :to="chatHref" class="text-xs text-muted transition-colors hover:text-default">
+            对话
+          </NuxtLink>
+          <UButton
+            icon="i-lucide-plus"
+            size="xs"
+            color="neutral"
+            variant="ghost"
+            :to="`/projects/${currentProjectId}/chat`"
+            title="新对话"
+            aria-label="新对话"
+          />
+        </div>
+
+        <div class="lo-sidebar-sessions">
+          <template v-if="sessionsPending && !sessions.length">
+            <USkeleton v-for="n in 3" :key="n" class="h-12 shrink-0 rounded-lg" />
+          </template>
+          <template v-else>
+            <NuxtLink
+              v-for="session in sessions"
+              :key="session.id"
+              :to="`/projects/${currentProjectId}/chat?session=${session.id}`"
+              class="rounded-lg px-2.5 py-2 text-sm transition-colors"
+              :class="
+                session.id === activeSessionId ? 'bg-primary/10 font-medium' : 'hover:bg-elevated/60'
+              "
+              :title="session.preview || '历史对话'"
+            >
+              <span class="line-clamp-2 break-words">{{ session.preview || '历史对话' }}</span>
+              <span class="mt-0.5 block text-[11px] text-muted">
+                {{ formatDateTime(session.created_at) }} · {{ session.message_count }} 条
+              </span>
+            </NuxtLink>
+            <p v-if="!sessions.length" class="px-2.5 text-xs text-muted">还没有历史对话</p>
+          </template>
+        </div>
       </div>
 
       <div class="mt-auto flex items-center justify-between border-t border-default pt-4">

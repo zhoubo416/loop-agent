@@ -1,14 +1,6 @@
 <script setup lang="ts">
 import MarkdownIt from 'markdown-it'
 
-interface SessionItem {
-  id: string
-  type: string
-  created_at: string
-  preview: string | null
-  message_count: number
-}
-
 interface MessageItem {
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'
@@ -17,9 +9,18 @@ interface MessageItem {
 }
 
 const route = useRoute()
+const router = useRouter()
 const api = useApi()
 const { waitForRun } = useRunWaiter()
 const projectId = computed(() => route.params.id as string)
+
+// 会话 id 以 URL 为准:侧边栏切换、刷新页面、浏览器回退都落在同一段对话上
+const sessionId = computed(() => (route.query.session as string | undefined) || null)
+const {
+  sessions,
+  pending: sessionsPending,
+  refresh: refreshSessions,
+} = useChatSessions(projectId)
 
 // markdown-it 单例:默认不渲染原始 HTML,AI 回复里的 HTML 一律转义
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -27,44 +28,61 @@ function renderMarkdown(content: string): string {
   return md.render(content)
 }
 
-// 会话列表:最新在前;首屏直接选最新一个
-const { data: sessions, pending: sessionsPending, refresh: refreshSessions } = await useAsyncData(
-  () => `chat-sessions-${projectId.value}`,
-  () => api.get<{ items: SessionItem[] }>(`/projects/${projectId.value}/sessions?type=chat`),
-)
-
-// 从资料页带 ?doc= 进入:默认开新对话,并把资料文本作为上下文随每条消息发送
-const pinnedDoc = ref<{ id: string; title: string } | null>(null)
-const docParam = route.query.doc as string | undefined
-if (docParam) {
-  const docAction = await api
-    .get<{ id: string; title: string }>(`/projects/${projectId.value}/actions/${docParam}`)
-    .catch(() => null)
-  if (docAction) pinnedDoc.value = { id: docAction.id, title: docAction.title }
-}
-
-const sessionId = ref<string | null>(
-  pinnedDoc.value ? null : sessions.value?.items[0]?.id ?? null,
-)
 const messages = ref<MessageItem[]>([])
+const loadedSessionId = ref<string | null>(null)
+const pinnedDoc = ref<{ id: string; title: string } | null>(null)
 const draft = ref('')
 const sending = ref(false)
 const error = ref('')
 const runStatus = ref('')
 const insights = ref<{ refresh: () => Promise<void> } | null>(null)
 
-// 首屏加载当前会话的消息
-if (sessionId.value) {
-  const initial = await api.get<{ items: MessageItem[] }>(
-    `/projects/${projectId.value}/sessions/${sessionId.value}/messages`,
-  )
-  messages.value = initial.items
-}
-
-function sessionTitle(item: SessionItem): string {
+function sessionTitle(item: ChatSessionItem): string {
   const text = (item.preview ?? '').replace(/\s+/g, ' ').trim()
   return text.length > 24 ? `${text.slice(0, 24)}…` : text || '历史对话'
 }
+
+async function loadSession(id: string | null, force = false) {
+  if (!force && id === loadedSessionId.value) return
+  // 先记下目标会话,URL 变化触发的重复加载会被挡掉
+  loadedSessionId.value = id
+  if (!id) {
+    messages.value = []
+    return
+  }
+  try {
+    const result = await api.get<{ items: MessageItem[] }>(
+      `/projects/${projectId.value}/sessions/${id}/messages`,
+    )
+    messages.value = result.items
+  } catch (caught) {
+    loadedSessionId.value = null
+    messages.value = []
+    error.value = (caught as Error).message
+  }
+}
+
+// 资料 pin 跟着 URL 里的 doc 参数走:从资料页进入时带上,切到别的会话就摘掉
+async function syncPinnedDoc() {
+  const docId = (route.query.doc as string | undefined) || null
+  if (!docId) {
+    pinnedDoc.value = null
+    return
+  }
+  if (pinnedDoc.value?.id === docId) return
+  const docAction = await api
+    .get<{ id: string; title: string }>(`/projects/${projectId.value}/actions/${docId}`)
+    .catch(() => null)
+  pinnedDoc.value = docAction ? { id: docAction.id, title: docAction.title } : null
+}
+
+await syncPinnedDoc()
+await loadSession(sessionId.value)
+
+watch([sessionId, () => route.query.doc, projectId], async () => {
+  await syncPinnedDoc()
+  await loadSession(sessionId.value)
+})
 
 // 新消息进入后自动滚到消息区底部,保持最新内容可见
 const scrollBox = ref<HTMLElement | null>(null)
@@ -77,25 +95,9 @@ watch(
   { immediate: true },
 )
 
-async function loadMessages(id: string) {
-  const result = await api.get<{ items: MessageItem[] }>(
-    `/projects/${projectId.value}/sessions/${id}/messages`,
-  )
-  messages.value = result.items
-}
-
 function switchSession(id: string) {
-  if (id === sessionId.value || sending.value) return
-  sessionId.value = id
-  // 资料上下文只属于从资料页开始的那段对话,切到历史会话就摘掉
-  pinnedDoc.value = null
-  void loadMessages(id)
-}
-
-function newConversation() {
-  if (sending.value) return
-  sessionId.value = null
-  messages.value = []
+  if (id === sessionId.value) return
+  void navigateTo({ path: route.path, query: { session: id } })
 }
 
 async function send() {
@@ -105,6 +107,9 @@ async function send() {
   sending.value = true
   draft.value = ''
   runStatus.value = '智能体正在输入…'
+
+  // 记下这条消息属于哪一段讨论:发送期间用户可能从侧边栏切走
+  const sentSessionId = sessionId.value
 
   messages.value.push({
     id: `pending-${Date.now()}`,
@@ -121,12 +126,18 @@ async function send() {
       agent_run_id: string | null
     }>(`/projects/${projectId.value}/chat`, {
       content,
-      ...(sessionId.value ? { session_id: sessionId.value } : {}),
+      ...(sentSessionId ? { session_id: sentSessionId } : {}),
       ...(pinnedDoc.value ? { document_id: pinnedDoc.value.id } : {}),
     })
-    sessionId.value = response.session_id
+
+    if (sessionId.value === sentSessionId) {
+      // 这段是新会话:把 session 写进 URL,侧边栏高亮和刷新后的落点都跟着走
+      if (response.session_id !== sentSessionId) {
+        await router.replace({ query: { ...route.query, session: response.session_id } })
+      }
+      await loadSession(response.session_id, true)
+    }
     // 对话回复立即进入消息流,思考在后台异步进行
-    await loadMessages(response.session_id)
     void refreshSessions()
 
     if (response.agent_run_id) {
@@ -152,90 +163,56 @@ async function send() {
 </script>
 
 <template>
-  <!-- 不用 UContainer:聊天页需要三栏拉满整个内容区宽度 -->
-  <div class="lo-chat-shell">
+  <UContainer class="lo-chat-shell">
+    <!-- 内容宽度和行动、时间线等页面一致,两边留白由 UContainer 提供 -->
     <div class="flex min-h-0 flex-1 flex-col gap-6 lg:flex-row">
-      <!-- 左:历史对话列表(窄屏收起,用对话区顶部的标签行代替) -->
-      <aside class="hidden min-h-0 w-60 shrink-0 flex-col gap-2 rounded-xl bg-elevated/50 p-3 lg:flex">
-        <UButton
-          icon="i-lucide-plus"
-          color="neutral"
-          variant="outline"
-          size="sm"
-          block
-          @click="newConversation"
-        >
-          新对话
-        </UButton>
-        <p class="px-2.5 pt-1 text-xs text-muted">历史对话</p>
-        <div v-if="sessionsPending && !sessions" class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-          <USkeleton v-for="n in 4" :key="n" class="h-12 shrink-0 rounded-lg" />
-        </div>
-        <div v-else class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
-          <button
-            v-for="session in sessions?.items ?? []"
-            :key="session.id"
-            class="rounded-lg px-2.5 py-2 text-left text-sm transition-colors"
-            :class="session.id === sessionId ? 'bg-primary/10 font-medium' : 'hover:bg-elevated/60'"
-            :title="session.preview ?? '历史对话'"
-            @click="switchSession(session.id)"
-          >
-            <span class="line-clamp-2 break-words">{{ session.preview || '历史对话' }}</span>
-            <span class="mt-0.5 block text-[11px] text-muted">
-              {{ formatDateTime(session.created_at) }} · {{ session.message_count }} 条
-            </span>
-          </button>
-          <p v-if="!(sessions?.items ?? []).length" class="px-2.5 text-xs text-muted">
-            还没有历史对话
-          </p>
-        </div>
-      </aside>
-
       <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div class="mb-3 flex shrink-0 items-center justify-between gap-3">
-          <h1 class="text-lg font-semibold">对话</h1>
-          <div class="flex items-center gap-2">
-            <UButton
-              icon="i-lucide-plus"
-              size="xs"
-              color="neutral"
-              variant="outline"
-              class="lg:hidden"
-              @click="newConversation"
-            >
-              新对话
-            </UButton>
-            <UButton :to="`/projects/${projectId}`" color="neutral" variant="ghost" size="xs">
-              回到概览
-            </UButton>
-          </div>
+        <div class="mb-4 flex shrink-0 items-center justify-between gap-3">
+          <h1 class="text-xl font-semibold">对话</h1>
+          <UButton :to="`/projects/${projectId}`" color="neutral" variant="ghost" size="xs">
+            回到概览
+          </UButton>
         </div>
 
         <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-3 shrink-0" />
 
-        <div v-if="sessionsPending && !sessions" class="mb-3 flex shrink-0 gap-2 overflow-hidden lg:hidden">
-          <USkeleton v-for="n in 3" :key="n" class="h-6 w-24 shrink-0 rounded-full" />
-        </div>
-        <div
-          v-else-if="(sessions?.items ?? []).length"
-          class="mb-3 flex shrink-0 items-center gap-2 overflow-x-auto pb-1 lg:hidden"
-        >
-          <UBadge
-            v-for="session in sessions?.items ?? []"
-            :key="session.id"
-            variant="subtle"
-            :color="session.id === sessionId ? 'primary' : 'neutral'"
-            class="shrink-0 cursor-pointer"
-            :title="session.preview ?? '历史对话'"
-            @click="switchSession(session.id)"
+        <!-- 窄屏侧边栏不显示会话列表,历史对话改为这里的横向标签行 -->
+        <div class="lo-session-tabs mb-3 shrink-0 items-center gap-2 overflow-x-auto pb-1">
+          <UButton
+            icon="i-lucide-plus"
+            size="xs"
+            color="neutral"
+            variant="outline"
+            :to="`/projects/${projectId}/chat`"
+            class="shrink-0"
           >
-            {{ sessionTitle(session) }}
-          </UBadge>
+            新对话
+          </UButton>
+          <template v-if="sessionsPending && !sessions.length">
+            <USkeleton
+              v-for="n in 3"
+              :key="n"
+              class="h-6 w-24 shrink-0 rounded-full"
+            />
+          </template>
+          <template v-else>
+            <UBadge
+              v-for="session in sessions"
+              :key="session.id"
+              variant="subtle"
+              :color="session.id === sessionId ? 'primary' : 'neutral'"
+              class="shrink-0 cursor-pointer"
+              :title="session.preview ?? '历史对话'"
+              @click="switchSession(session.id)"
+            >
+              {{ sessionTitle(session) }}
+            </UBadge>
+          </template>
         </div>
 
         <div ref="scrollBox" class="mb-4 min-h-0 flex-1 overflow-y-auto">
           <div class="flex flex-col gap-4">
-            <template v-if="sessionsPending && !sessions">
+            <template v-if="sessionsPending && !sessions.length">
               <USkeleton v-for="n in 3" :key="n" class="h-16 rounded-xl" />
             </template>
             <p v-else-if="!messages.length" class="text-sm text-muted">
@@ -321,9 +298,9 @@ async function send() {
         </div>
       </div>
 
-      <aside class="flex w-full shrink-0 flex-col lg:mr-2 lg:w-80">
+      <aside class="flex w-full shrink-0 flex-col lg:w-80">
         <ChatInsights ref="insights" :project-id="projectId" :session-id="sessionId" />
       </aside>
     </div>
-  </div>
+  </UContainer>
 </template>
