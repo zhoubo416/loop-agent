@@ -1,5 +1,11 @@
 import type { AgentEngine } from '../../src/agent/engine.js'
-import type { AgentInput, AgentOutput, ConversationInput } from '../../src/agent/types.js'
+import type {
+  AgentInput,
+  AgentOutput,
+  ConversationInput,
+  OrganizeInput,
+  OrganizeOutput,
+} from '../../src/agent/types.js'
 
 const FAILURE_KEYWORDS = ['失败', '异常', '问题', '风险', '差很多']
 const DONE_KEYWORDS = ['完成', '结束', '拿到']
@@ -25,7 +31,20 @@ export class ScriptedEngine implements AgentEngine {
   readonly name = 'scripted-test-double'
 
   async converse(input: ConversationInput): Promise<string> {
+    if (input.documents?.length) {
+      const names = input.documents.map((doc) => `《${doc.name}》`).join('')
+      return `(scripted 讨论回复)关于「${input.question}」,结合资料${names}和当前项目状态,建议先核对已有记录再判断。`
+    }
     return `(scripted 讨论回复)关于「${input.question}」,结合当前项目状态,建议先核对已有记录再判断。`
+  }
+
+  async organize(input: OrganizeInput): Promise<OrganizeOutput> {
+    const names = input.documents.map((doc) => `《${doc.name}》`).join('')
+    return {
+      summary: `(scripted 整理)这批资料的核心内容已汇总`,
+      keyPoints: [`资料包含 ${input.documents.length} 份文档:${names}`],
+      content: `(scripted 整理)已基于${names}的内容整理出结构化草稿,${input.instruction ?? '没有额外要求'}。`,
+    }
   }
 
   async run(input: AgentInput): Promise<AgentOutput> {

@@ -153,12 +153,13 @@ Output
 
 # 4. AgentEngine 接口
 
-接口包含思考和对话两种能力：
+接口包含思考、对话和整理三种能力：
 
 ```ts
 interface AgentEngine {
   run(input: AgentInput, tools?: AgentToolContext): Promise<AgentOutput>
   converse(input: ConversationInput): Promise<string>
+  organize(input: OrganizeInput): Promise<OrganizeOutput>
   healthCheck(): Promise<{ ok: boolean; detail?: string }>
 }
 ```
@@ -166,7 +167,8 @@ interface AgentEngine {
 接口不暴露 PI。
 
 - `run()` 是思考：输入完整项目上下文,输出结构化 `AgentOutput`,Runtime 校验后落库。
-- `converse()` 是研究对话:只带项目背景和会话历史,返回纯文本回复,不产生任何项目变更。Chat 页用它回答用户问题;回复完成后,Runtime 把这段会话的全部问答记录组合成一条 `conversation` Observation 再交给思考,思考坚持宁缺毋滥,没有新信息的讨论不产出任何变更。
+- `converse()` 是研究对话:只带项目背景和会话历史,返回纯文本回复,不产生任何项目变更。Chat 页用它回答用户问题;回复完成后,Runtime 把这段会话的全部问答记录组合成一条 `conversation` Observation 再交给思考,思考坚持宁缺毋滥,没有新信息的讨论不产出任何变更。从资料页进入的对话通过 `ConversationInput.documents` 携带文档文本(名称与截断后的提取文本),Engine 基于资料回答,不编造资料里没有的信息。
+- `organize()` 是资料整理:输入项目概要、行动说明和文档文本列表(可选用户补充的整理要求),输出 `{ summary, keyPoints, content }` 草稿。草稿不落库、不触发思考,由用户修订后随 Action complete 提交;输出解析与 `run` 一样走统一校验,兼容 snake_case 与 camelCase。
 
 Runtime 只知道：
 
@@ -177,11 +179,17 @@ AgentEngine.run()
     ↓
 AgentOutput
 
-ConversationInput
+ConversationInput (+ documents?)
     ↓
 AgentEngine.converse()
     ↓
 string
+
+OrganizeInput
+    ↓
+AgentEngine.organize()
+    ↓
+OrganizeOutput
 ```
 
 ---
@@ -1206,6 +1214,7 @@ Tool Calling 已启用：`PIAgentEngine` 在多轮循环里下发 `tools`，把�
 
 ## 修改历史
 
+- 2026-10-14：第 4 节接口增加 `organize`（资料 AI 整理）模式；`ConversationInput` 增加可选 `documents`，支持把资料文本作为对话上下文。
 - 2026-10-12：第 4 节接口增加 `converse`：对话能力与研究讨论对应，返回纯文本回复，项目变更仍只由 `run` 的结构化产出经 Runtime 落库。
 - 2026-10-05：新增第 34 节，记录 Agent Engine 的目录结构、PI 实现方式与 mock 引擎的定位。
 - 2026-10-05：删除 mock 引擎，产品只保留 `PIAgentEngine`；确定性的测试替身移到测试目录，并补充 JSON 输出模式的兼容处理。

@@ -9,6 +9,19 @@ interface ExecutionItem {
   completed_at: string | null
 }
 
+interface DocumentItem {
+  id: string
+  name: string
+  source: 'upload' | 'url'
+  mime_type: string | null
+  file_url: string | null
+  file_size: number | string | null
+  extracted_chars: number
+  parse_status: 'pending' | 'ok' | 'unsupported' | 'failed'
+  parse_error: string | null
+  created_at: string
+}
+
 interface ActionDetail {
   id: string
   title: string
@@ -21,6 +34,7 @@ interface ActionDetail {
   due_at: string | null
   created_at: string
   completed_at: string | null
+  documents: DocumentItem[]
   executions: ExecutionItem[]
   analysis: Array<{
     id: string
@@ -62,8 +76,10 @@ const { busy, error, notice, complete, fail, cancel } = useActionLifecycle(
 const summary = ref('')
 const keyPoints = ref('')
 const content = ref('')
+const organizing = ref(false)
 
 const editable = computed(() => ['pending', 'running'].includes(action.value?.status ?? ''))
+const chatHref = computed(() => `/projects/${projectId.value}/chat?doc=${actionId.value}`)
 
 function lines(value: string): string[] {
   return value.split('\n').map((line) => line.trim()).filter(Boolean)
@@ -74,6 +90,27 @@ function submit() {
     { key_points: lines(keyPoints.value), content: content.value },
     summary.value || '资料已整理',
   )
+}
+
+/** AI 整理:把文档文本交给智能体生成草稿,用户检查修订后再提交 */
+async function organize() {
+  if (organizing.value) return
+  organizing.value = true
+  error.value = ''
+  try {
+    const draft = await api.post<{ summary: string; key_points: string[]; content: string }>(
+      `/projects/${projectId.value}/actions/${actionId.value}/organize`,
+      {},
+    )
+    summary.value = draft.summary
+    keyPoints.value = draft.key_points.join('\n')
+    content.value = draft.content
+    notice.value = 'AI 已整理出草稿,请检查修订后再提交。'
+  } catch (caught) {
+    error.value = (caught as Error).message
+  } finally {
+    organizing.value = false
+  }
 }
 
 function failWithReason() {
@@ -108,22 +145,47 @@ function failWithReason() {
             <template v-if="action.due_at"> · 截止 {{ formatDateTime(action.due_at) }}</template>
           </p>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
+        <div class="flex shrink-0 flex-wrap items-center gap-2">
           <UBadge :color="kindColor(action.kind)" variant="soft">{{ kindLabel(action.kind) }}</UBadge>
           <UBadge :color="priorityColor(action.priority)" variant="soft">{{ priorityLabel(action.priority) }}</UBadge>
           <UBadge :color="statusColor(action.status)" variant="soft">{{ statusLabel(action.status) }}</UBadge>
+          <UButton :to="chatHref" icon="i-lucide-message-circle" color="neutral" variant="outline" size="xs">
+            去对话
+          </UButton>
         </div>
       </div>
 
       <div class="grid gap-4 lg:grid-cols-3">
         <ActionSource :source="action.source" />
+
+        <ActionDocuments
+          :project-id="projectId"
+          :action-id="actionId"
+          :documents="action.documents ?? []"
+          :editable="editable"
+          @refresh="refresh()"
+        />
+
         <UCard class="lg:col-span-2">
           <template #header>
-            <span class="font-medium">资料内容</span>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-medium">{{ action.status === 'completed' ? '整理结果' : '资料内容' }}</span>
+              <UButton
+                v-if="editable"
+                icon="i-lucide-sparkles"
+                size="xs"
+                color="secondary"
+                variant="outline"
+                :loading="organizing"
+                @click="organize()"
+              >
+                AI 整理
+              </UButton>
+            </div>
           </template>
 
           <div v-if="editable" class="flex flex-col gap-3">
-            <UFormField label="结论">
+            <UFormField label="结论" help="一句话概括这份资料说明了什么,AI 整理会自动填充,可手工修订">
               <UTextarea v-model="summary" :rows="2" class="w-full" placeholder="一句话概括这份资料" />
             </UFormField>
             <UFormField label="要点" help="每行一条">
@@ -138,10 +200,15 @@ function failWithReason() {
               <UButton color="error" variant="ghost" :disabled="busy" @click="cancel()">取消</UButton>
             </div>
           </div>
-          <p v-else class="text-sm text-muted">这份资料已经整理完,内容见右侧执行历史。</p>
+          <ActionResult
+            v-else
+            :status="action.status"
+            :kind="action.kind"
+            :executions="action.executions"
+          />
         </UCard>
 
-        <ExecutionList :executions="action.executions" />
+        <ExecutionList :executions="action.executions" compact />
         <ActionAnalysis :analysis="action.analysis" />
       </div>
     </template>

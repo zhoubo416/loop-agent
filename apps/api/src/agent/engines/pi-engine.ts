@@ -3,8 +3,14 @@ import {
   type AgentEngine,
   type AgentToolContext,
 } from '../engine.js'
-import { parseAgentOutput } from '../output-validator.js'
-import type { AgentInput, AgentOutput, ConversationInput } from '../types.js'
+import { parseAgentOutput, parseOrganizeOutput } from '../output-validator.js'
+import type {
+  AgentInput,
+  AgentOutput,
+  ConversationInput,
+  OrganizeInput,
+  OrganizeOutput,
+} from '../types.js'
 
 export interface PiEngineOptions {
   baseUrl: string
@@ -117,6 +123,12 @@ export class PIAgentEngine implements AgentEngine {
         ? [`开放问题:${input.state.openIssues.join(';')}`]
         : []),
     ]
+    if (input.documents?.length) {
+      projectLines.push(
+        `用户当前正在讨论的资料如下,回答时基于资料内容,不要编造资料里没有的信息:`,
+        ...input.documents.map((doc) => `《${doc.name}》\n${doc.text}`),
+      )
+    }
     const messages: ChatMessage[] = [
       { role: 'system', content: `${CHAT_SYSTEM_PROMPT}\n\n${projectLines.join('\n')}` },
       ...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -127,6 +139,35 @@ export class PIAgentEngine implements AgentEngine {
     throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
       retryable: true,
     })
+  }
+
+  async organize(input: OrganizeInput): Promise<OrganizeOutput> {
+    const systemPrompt = `你是 LOOP 系统中的 Agent Engine,负责把项目资料整理成结构化结论。
+用户会把资料行动的说明和若干文档的文本交给你,你需要整理成可以直接提交给项目智能体的草稿。
+
+只输出一个 JSON 对象,不要输出解释文字或 Markdown 代码块。结构如下:
+{
+  "summary": "一句话结论,概括这份资料说明了什么",
+  "key_points": ["要点,每条一句话"],
+  "content": "整理后的正文,可以是分段的说明或数据汇总"
+}
+
+要求:
+- 只基于资料文本里的实际内容整理,不要编造资料里没有的信息。
+- 文本过短或信息有限时,如实概括已有的部分,key_points 可以为空数组。
+- 用简体中文输出,保持信息密度,不要空话。`
+
+    const userPayload = {
+      action: input.action,
+      documents: input.documents.map((doc) => ({ name: doc.name, text: doc.text })),
+      ...(input.instruction ? { instruction: input.instruction } : {}),
+    }
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: JSON.stringify(userPayload) },
+    ]
+    const result = await this.singleShot(messages)
+    return parseOrganizeOutput(stripCodeFence(result))
   }
 
   async healthCheck(): Promise<{ ok: boolean; detail?: string }> {

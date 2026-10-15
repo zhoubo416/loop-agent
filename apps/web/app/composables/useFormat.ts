@@ -12,6 +12,15 @@ export function formatDateTime(value?: string | null): string {
   }).format(date)
 }
 
+/** 文件大小的人话显示,文档列表用 */
+export function formatSize(value?: number | string | null): string {
+  const size = typeof value === 'string' ? Number.parseInt(value, 10) : value
+  if (!size || !Number.isFinite(size) || size < 0) return '—'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export const statusLabels: Record<string, string> = {
   created: '已创建',
   active: '进行中',

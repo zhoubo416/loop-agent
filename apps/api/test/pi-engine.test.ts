@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createEngine } from '../src/agent/engine-factory.js'
-import { parseAgentOutput } from '../src/agent/output-validator.js'
+import { AgentEngineError } from '../src/agent/engine.js'
+import { parseAgentOutput, parseOrganizeOutput } from '../src/agent/output-validator.js'
 import { config } from '../src/config.js'
 import type { AgentInput } from '../src/agent/types.js'
 
@@ -69,3 +70,35 @@ test(
     console.log('Engine 输出:', JSON.stringify(output, null, 2))
   },
 )
+
+test('parseOrganizeOutput 接受 snake_case 与 camelCase 的整理结果', () => {
+  const output = parseOrganizeOutput({
+    summary: '资料核心结论',
+    key_points: ['要点一', '要点二'],
+    content: '整理后的正文',
+  })
+  assert.deepEqual(output, {
+    summary: '资料核心结论',
+    keyPoints: ['要点一', '要点二'],
+    content: '整理后的正文',
+  })
+
+  const camel = parseOrganizeOutput({
+    summary: 'S',
+    keyPoints: ['a'],
+    content: 'c',
+  })
+  assert.deepEqual(camel.keyPoints, ['a'])
+})
+
+test('parseOrganizeOutput 容忍字符串输入、单条要点和缺失正文', () => {
+  const output = parseOrganizeOutput('{"summary":"结论","key_points":"单条要点"}')
+  assert.equal(output.summary, '结论')
+  assert.deepEqual(output.keyPoints, ['单条要点'])
+  assert.equal(output.content, '')
+})
+
+test('parseOrganizeOutput 缺少 summary 判为结构错误', () => {
+  assert.throws(() => parseOrganizeOutput({ key_points: ['x'] }), AgentEngineError)
+  assert.throws(() => parseOrganizeOutput('不是 JSON'), AgentEngineError)
+})

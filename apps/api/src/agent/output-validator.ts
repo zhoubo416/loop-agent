@@ -5,6 +5,7 @@ import type {
   AgentOutput,
   EventProposal,
   MemoryProposal,
+  OrganizeOutput,
   RecommendationProposal,
   StateProposal,
 } from './types.js'
@@ -244,4 +245,37 @@ export function parseAgentOutput(raw: unknown): ParsedAgentOutput {
   }
 
   return { output, warnings }
+}
+
+/**
+ * 解析 AI 整理模式的输出:summary / key_points / content 三个字段,
+ * 兼容 camelCase 与 snake_case。要点缺失时降级为空列表,内容缺失降级为空串,
+ * 只有 summary 完全没有才判为结构错误。
+ */
+export function parseOrganizeOutput(raw: unknown): OrganizeOutput {
+  let value = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      throw new AgentEngineError('ENGINE_INVALID_OUTPUT', '整理结果不是合法 JSON', { retryable: true })
+    }
+  }
+  const record = asRecord(value)
+  if (!record) {
+    throw new AgentEngineError('ENGINE_INVALID_OUTPUT', '整理结果必须是 JSON 对象', { retryable: true })
+  }
+
+  const summary = toText(pick(record, 'summary', 'conclusion'))
+  if (!summary) {
+    throw new AgentEngineError('ENGINE_INVALID_OUTPUT', '整理结果缺少 summary', { retryable: true })
+  }
+
+  const keyPointsRaw = pick(record, 'key_points', 'keyPoints', 'points')
+  const keyPoints = toArray(keyPointsRaw)
+    .map((item) => toText(item))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, MAX_ITEMS)
+
+  return { summary, keyPoints, content: toText(pick(record, 'content', 'detail')) ?? '' }
 }

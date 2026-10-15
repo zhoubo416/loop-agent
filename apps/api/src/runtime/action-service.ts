@@ -15,7 +15,12 @@ function asLines(value: unknown): string[] {
  * 把一次执行的结构化结果整理成信息密集的文字,
  * 让 Observation 带着“有效信息”回到 Agent,而不是只有一句状态。
  */
-function summarizeResult(kind: string, summary: string, output: Record<string, unknown>): string {
+function summarizeResult(
+  kind: string,
+  summary: string,
+  output: Record<string, unknown>,
+  fileNames: string[] = [],
+): string {
   const parts = [summary.trim()]
   const notes = typeof output.notes === 'string' ? output.notes.trim() : ''
   const content = typeof output.content === 'string' ? output.content.trim() : ''
@@ -32,6 +37,7 @@ function summarizeResult(kind: string, summary: string, output: Record<string, u
     const keyPoints = asLines(output.key_points ?? output.keyPoints)
     if (keyPoints.length) parts.push(`要点:${keyPoints.join(';')}`)
     if (content) parts.push(`内容:${content}`)
+    if (fileNames.length) parts.push(`文件:${fileNames.join('、')}`)
   } else {
     const results = asLines(output.results)
     const blockers = asLines(output.blockers)
@@ -155,7 +161,16 @@ export async function completeAction(
 
     const output = input.output ?? {}
     const summary = input.summary ?? `${action.title} 已完成`
-    const observationContent = summarizeResult(action.kind ?? 'task', summary, output)
+    // 资料完成时把文档名也带上,让 Agent 知道这份资料由哪些文件组成
+    let fileNames: string[] = []
+    if ((action.kind ?? 'task') === 'document') {
+      const documents = await tx.query<{ name: string }>(
+        'SELECT name FROM action_documents WHERE action_id = $1 ORDER BY created_at, id',
+        [action.id],
+      )
+      fileNames = documents.rows.map((row) => row.name)
+    }
+    const observationContent = summarizeResult(action.kind ?? 'task', summary, output, fileNames)
     await finishExecution(tx, execution.id, 'completed', { summary, kind: action.kind ?? 'task', ...output })
 
     const completed = await setActionStatus(tx, action.id, 'completed')

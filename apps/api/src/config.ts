@@ -21,6 +21,15 @@ export const config = {
     ? path.resolve(repoRoot, process.env.PGDATA_DIR)
     : path.resolve(repoRoot, '.data/pglite'),
 
+  // 资料(kind=document)的文件存储与文本提取上限
+  uploadDir: process.env.UPLOAD_DIR
+    ? path.resolve(repoRoot, process.env.UPLOAD_DIR)
+    : path.resolve(repoRoot, '.data/uploads'),
+  uploadMaxBytes: int(process.env.UPLOAD_MAX_BYTES, 25 * 1024 * 1024),
+  documentTextMaxChars: int(process.env.DOCUMENT_TEXT_MAX_CHARS, 200_000),
+  documentContextMaxChars: int(process.env.DOCUMENT_CONTEXT_MAX_CHARS, 24_000),
+  urlImportTimeoutMs: int(process.env.URL_IMPORT_TIMEOUT_MS, 30_000),
+
   agentEngine: (process.env.AGENT_ENGINE ?? 'pi').toLowerCase(),
   agentEngineBaseUrl: process.env.AGENT_ENGINE_BASE_URL ?? 'https://api.openai.com/v1',
   agentEngineApiKey: process.env.AGENT_ENGINE_API_KEY ?? '',

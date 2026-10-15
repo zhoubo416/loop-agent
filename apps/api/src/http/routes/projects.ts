@@ -22,7 +22,7 @@ import {
   listMessages,
   listSessions,
 } from '../../modules/sessions.js'
-import { listOpenActions } from '../../modules/actions.js'
+import { getAction, listOpenActions } from '../../modules/actions.js'
 import {
   getRecommendation,
   listRecommendations,
@@ -61,6 +61,8 @@ const chatSchema = z.object({
   content: z.string().min(1),
   session_id: z.string().uuid().optional(),
   idempotency_key: z.string().optional(),
+  /** 从资料页进入的对话:携带资料行动 ID,把文档文本作为上下文 */
+  document_id: z.string().uuid().optional(),
 })
 
 const sessionSchema = z.object({
@@ -358,12 +360,28 @@ export function registerProjectRoutes(app: FastifyInstance): void {
         ? await getSession(db, projectId, body.session_id)
         : await createSession(db, projectId, 'chat', user.id)
 
+      // 带资料讨论时先校验资料行动确实存在且属于本项目
+      if (body.document_id) {
+        const action = await getAction(db, projectId, body.document_id)
+        if (action.kind !== 'document') {
+          throw new ApiError('ACTION_KIND_MISMATCH', '这个行动不是资料,不能作为文档上下文')
+        }
+      }
+
       // 对话先行:AI 基于项目背景直接回答。失败时不落任何消息,让用户重发
-      const conversation = await buildConversationInput(db, projectId, session.id, body.content)
+      const conversation = await buildConversationInput(
+        db,
+        projectId,
+        session.id,
+        body.content,
+        body.document_id,
+      )
       const engine = getEngine()
       const reply = await engine.converse(conversation)
 
-      await addMessage(db, session.id, 'user', body.content)
+      await addMessage(db, session.id, 'user', body.content, {
+        ...(body.document_id ? { document_id: body.document_id } : {}),
+      })
       await addMessage(db, session.id, 'assistant', reply, { engine: engine.name })
 
       // 回复完成后,把这段对话的全部内容作为一条 Observation 交给思考阶段

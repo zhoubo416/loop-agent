@@ -1,13 +1,19 @@
 import type { Db } from '../db/client.js'
 import type { AgentRunRow } from '../modules/runs.js'
-import { listOpenActions } from '../modules/actions.js'
+import { listOpenActions, type ActionRow } from '../modules/actions.js'
 import { listEvents } from '../modules/events.js'
 import { listRecentExecutions } from '../modules/executions.js'
 import { listMemories } from '../modules/memories.js'
 import { listObservations } from '../modules/observations.js'
 import { listMessages } from '../modules/sessions.js'
 import { getState } from '../modules/states.js'
-import type { AgentInput, ConversationInput } from './types.js'
+import { config } from '../config.js'
+import type {
+  AgentInput,
+  ConversationInput,
+  DocumentContextInput,
+  OrganizeInput,
+} from './types.js'
 import { ApiError } from '../http/errors.js'
 
 function iso(value: Date | string | null | undefined): string | undefined {
@@ -126,12 +132,14 @@ export async function buildAgentInput(db: Db, run: AgentRunRow): Promise<AgentIn
 /**
  * 对话模式的输入组装:只带研究讨论需要的背景,不带完整思考上下文。
  * 本次问题单独传,history 里不包含它。
+ * 从资料页进入对话时传 documentId,把资料的提取文本一并带给 Engine。
  */
 export async function buildConversationInput(
   db: Db,
   projectId: string,
   sessionId: string,
   question: string,
+  documentId?: string,
 ): Promise<ConversationInput> {
   const projectResult = await db.query<{
     name: string
@@ -159,5 +167,67 @@ export async function buildConversationInput(
     },
     history,
     question,
+    ...(documentId ? { documents: await loadDocumentContext(db, projectId, documentId) } : {}),
   }
+}
+
+/**
+ * AI 整理模式的输入组装:带上项目背景、行动说明和资料的全部文档文本。
+ * 没有可解析文本时抛 DOCUMENT_NO_TEXT,由调用方转成对用户的提示。
+ */
+export async function buildOrganizeInput(
+  db: Db,
+  projectId: string,
+  action: ActionRow,
+  instruction?: string,
+): Promise<OrganizeInput> {
+  const projectResult = await db.query<{ name: string; objective: string }>(
+    'SELECT name, objective FROM projects WHERE id = $1',
+    [projectId],
+  )
+  const project = projectResult.rows[0]
+  if (!project) throw new ApiError('PROJECT_NOT_FOUND', 'Project 不存在')
+
+  const documents = await loadDocumentContext(db, projectId, action.id)
+  if (documents.length === 0) {
+    throw new ApiError('DOCUMENT_NO_TEXT', '还没有可解析出文本的文档,先上传或导入资料')
+  }
+
+  return {
+    project: { name: project.name, objective: project.objective },
+    action: {
+      title: action.title,
+      ...(action.description ? { description: action.description } : {}),
+    },
+    documents,
+    ...(instruction ? { instruction } : {}),
+  }
+}
+
+/**
+ * 资料文本上下文:按 action 取出所有解析成功的文档文本,
+ * 合计截断到 documentContextMaxChars,保证进入模型的内容有界。
+ */
+async function loadDocumentContext(
+  db: Db,
+  projectId: string,
+  actionId: string,
+): Promise<DocumentContextInput[]> {
+  const result = await db.query<{ name: string; extracted_text: string | null }>(
+    `SELECT name, extracted_text FROM action_documents
+     WHERE project_id = $1 AND action_id = $2 AND parse_status = 'ok'
+     ORDER BY created_at, id`,
+    [projectId, actionId],
+  )
+  const documents: DocumentContextInput[] = []
+  let budget = config.documentContextMaxChars
+  for (const row of result.rows) {
+    if (budget <= 0) break
+    const text = (row.extracted_text ?? '').trim()
+    if (!text) continue
+    const slice = text.slice(0, budget)
+    budget -= slice.length
+    documents.push({ name: row.name, text: slice })
+  }
+  return documents
 }

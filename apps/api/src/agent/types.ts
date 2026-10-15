@@ -100,6 +100,7 @@ export interface ConversationTurn {
 /**
  * 对话模式的输入:回答用户就项目提出的问题。
  * 它和思考(AgentInput)分开:对话只产生文本回复,项目变更由思考阶段处理。
+ * 用户从资料页进入对话时,documents 携带当前讨论资料的提取文本。
  */
 export interface ConversationInput {
   project: {
@@ -114,6 +115,37 @@ export interface ConversationInput {
   }
   history: ConversationTurn[]
   question: string
+  documents?: DocumentContextInput[]
+}
+
+/** 一份资料的提取文本,整理和对话共用 */
+export interface DocumentContextInput {
+  name: string
+  text: string
+}
+
+/**
+ * AI 整理模式的输入:把资料的文档文本整理成结构化草稿。
+ * 与 run/converse 并列,是 Engine 的第三种模式;输出不落库,
+ * 由用户修订后随 Action complete 提交。
+ */
+export interface OrganizeInput {
+  project: {
+    name: string
+    objective: string
+  }
+  action: {
+    title: string
+    description?: string
+  }
+  documents: DocumentContextInput[]
+  instruction?: string
+}
+
+export interface OrganizeOutput {
+  summary: string
+  keyPoints: string[]
+  content: string
 }
 
 export interface StateProposal {

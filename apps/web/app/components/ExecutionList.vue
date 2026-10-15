@@ -9,7 +9,14 @@ interface ExecutionItem {
   completed_at: string | null
 }
 
-defineProps<{ executions: ExecutionItem[] }>()
+withDefaults(
+  defineProps<{
+    executions: ExecutionItem[]
+    /** 精简模式:只留时间线,结构化结果由结果卡片展示,避免同一份内容渲染两遍 */
+    compact?: boolean
+  }>(),
+  { compact: false },
+)
 
 function summaryOf(execution: ExecutionItem): string {
   const summary = execution.output?.summary
@@ -64,13 +71,15 @@ function fieldsOf(execution: ExecutionItem): Array<{ label: string; value: strin
             {{ statusLabel(execution.status) }}
           </UBadge>
         </div>
-        <p v-if="summaryOf(execution)" class="mt-1 text-sm">{{ summaryOf(execution) }}</p>
-        <dl v-if="fieldsOf(execution).length" class="mt-1 flex flex-col gap-0.5">
-          <div v-for="field in fieldsOf(execution)" :key="field.label" class="text-sm">
-            <span class="text-muted">{{ field.label }}:</span>
-            {{ field.value }}
-          </div>
-        </dl>
+        <template v-if="!compact">
+          <p v-if="summaryOf(execution)" class="mt-1 text-sm">{{ summaryOf(execution) }}</p>
+          <dl v-if="fieldsOf(execution).length" class="mt-1 flex flex-col gap-0.5">
+            <div v-for="field in fieldsOf(execution)" :key="field.label" class="text-sm">
+              <span class="text-muted">{{ field.label }}:</span>
+              {{ field.value }}
+            </div>
+          </dl>
+        </template>
         <p v-if="execution.error" class="mt-1 text-sm text-error">
           {{ (execution.error as { message?: string }).message }}
         </p>

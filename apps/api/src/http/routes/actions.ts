@@ -14,6 +14,7 @@ import {
   updateAction,
 } from '../../modules/actions.js'
 import { getExecution, listExecutions } from '../../modules/executions.js'
+import { listDocuments } from '../../modules/documents.js'
 import {
   getRecommendation,
   listRecommendations,
@@ -112,6 +113,7 @@ export function registerActionRoutes(app: FastifyInstance): void {
       executions: await listExecutions(getDb(), actionId),
       analysis: await getActionAnalysis(getDb(), projectId, actionId),
       source: await getActionSource(getDb(), projectId, action),
+      documents: await listDocuments(getDb(), projectId, actionId),
     }
   })
 

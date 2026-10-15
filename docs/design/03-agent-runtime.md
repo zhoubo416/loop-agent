@@ -2512,10 +2512,21 @@ Action 完成、失败、取消时，Execution、Action 状态、Observation 和
 ## 49.8 Action 的结构化执行结果
 
 第 14 节的 Result → Observation 不能只是“改一个状态”。Action 现在带 `kind`（task / meeting / document），完成时按种类采集结构化结果：会议采参与人、纪要、决定、后续行动；资料采要点和内容；任务采结果、阻塞和说明。结构化数据写入 `executions.output`，并整理成信息密集的文字写进 Observation，随 `recent_results` 一起回到 Agent 的上下文，Agent 才能基于“实际发生了什么”继续判断。
+
+## 49.9 资料文档与 AI 整理
+
+资料行动的文档（本机上传或 URL 导入）在导入时就由服务端提取文本存库，不占用 Agent 的运行时。围绕文档有两条不触发思考的路径和一条触发的路径：
+
+- **文档对话**（不触发思考）：`POST /chat` 带可选 `document_id`，Context Builder 把资料文本（截断）拼进对话输入，Engine 的 `converse` 基于资料回答。它仍然走“回复后提交 conversation Observation”的既有链路，思考看到的是会话文本，与普通对话一致。
+- **AI 整理**（不触发思考）：`AgentEngine` 增加 `organize` 模式，输入项目背景、行动说明和文档文本，输出 `{ summary, key_points, content }` 草稿。草稿不落库，由用户在详情页修订后随 complete 一起提交；上传、导入、整理本身都不产生 Observation 或 Run。
+- **提交**（触发思考）：用户点「完成并交给智能体」后走第 14 节的 complete 流程。kind=document 的 Observation 在要点和内容之外附加文档名（`文件:报告.pdf、数据.xlsx`），让 Agent 知道这份资料由哪些文件组成。
+
+文档解析只做“把人能读的字提出来”：PDF 用 pdf.js（unpdf），docx 用 mammoth，xlsx / pptx 直接解压取 XML 文本节点，纯文本按 UTF-8 读取；图片等格式标记为 `unsupported`，不阻塞导入，只是智能体读不到内容。文本按 `DOCUMENT_TEXT_MAX_CHARS` 入库、`DOCUMENT_CONTEXT_MAX_CHARS` 进入模型，保证上下文有界。
 ---
 
 ## 修改历史
 
+- 2026-10-14：新增第 49.9 节，记录资料文档的文本提取、文档对话、AI 整理（`organize` 模式）与完成提交的边界：上传/导入/整理不触发思考，提交时 Observation 附加文档名。
 - 2026-10-12：第 49.3 节更新 Chat 的对话与思考分离：`AgentEngine` 增加 `converse`，对话同步回复后自动提交 `conversation` Observation，judgment 不再回写会话消息。
 - 2026-10-05：新增第 49 节，记录第一版实现中 Worker、事务边界、Agent Engine 和 Tool Calling 的落地方式。
 - 2026-10-05：第 49.3 节改为只描述真实 Engine；确定性实现从产品代码移到测试目录，仅在测试中注入。

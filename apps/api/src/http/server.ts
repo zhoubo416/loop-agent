@@ -1,10 +1,13 @@
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify'
 import cors from '@fastify/cors'
+import multipart from '@fastify/multipart'
 import { ZodError } from 'zod'
 import { ApiError } from './errors.js'
+import { config } from '../config.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerObservationRoutes } from './routes/observations.js'
 import { registerActionRoutes } from './routes/actions.js'
+import { registerDocumentRoutes, uploadFilesLimit } from './routes/documents.js'
 import { registerScheduleRoutes } from './routes/schedules.js'
 import { registerSystemRoutes } from './routes/system.js'
 import { registerNotificationRoutes } from './routes/notifications.js'
@@ -17,6 +20,12 @@ export function buildServer(): FastifyInstance {
     origin: true,
     allowedHeaders: ['content-type', 'x-user-id', 'idempotency-key', 'authorization'],
     exposedHeaders: ['idempotency-key'],
+  })
+
+  // 文件上传:超限直接报错而不是截断,数量和大小限制在插件层统一约束
+  void app.register(multipart, {
+    throwFileSizeLimit: true,
+    limits: { fileSize: config.uploadMaxBytes, files: uploadFilesLimit },
   })
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
@@ -65,6 +74,7 @@ export function buildServer(): FastifyInstance {
   registerProjectRoutes(app)
   registerObservationRoutes(app)
   registerActionRoutes(app)
+  registerDocumentRoutes(app)
   registerScheduleRoutes(app)
 
   return app

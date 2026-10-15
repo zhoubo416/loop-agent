@@ -42,12 +42,26 @@ export function useApi() {
     }
   }
 
+  /** 拉取二进制内容(带鉴权),文档预览用 */
+  async function getBlob(path: string): Promise<Blob> {
+    const headers = await authHeaders()
+    return $fetch(`${base}${path}`, { headers, responseType: 'blob' })
+  }
+
+  /** 提交 multipart 表单(带鉴权),文件上传用 */
+  async function postForm<T>(path: string, form: FormData): Promise<T> {
+    const headers = await authHeaders()
+    return $fetch(`${base}${path}`, { method: 'POST', headers, body: form }) as Promise<T>
+  }
+
   return {
     get: <T>(path: string) => request<T>(path),
     post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body }),
     put: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body }),
     patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
     del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+    getBlob,
+    postForm,
     base,
     tokenCookie,
     userIdCookie,

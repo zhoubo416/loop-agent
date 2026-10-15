@@ -775,6 +775,7 @@ actions
 | assignee_id | uuid | YES | - | 指定用户 |
 | status | varchar(30) | NO | 'pending' | 状态 |
 | priority | varchar(20) | NO | 'medium' | 优先级 |
+| kind | varchar(30) | NO | 'task' | 行动类型(task / meeting / document) |
 | due_at | timestamptz | YES | - | 截止时间 |
 | created_at | timestamptz | NO | now() | 创建时间 |
 | updated_at | timestamptz | NO | now() | 更新时间 |
@@ -2003,7 +2004,63 @@ INDEX(project_id, dedup_key)
 
 ---
 
-# 41. 最终原则
+# 41. action_documents
+
+## 41.1 作用
+
+资料(kind=document)行动的文档。一份资料行动可以挂多个文档，来源有两种：
+
+- `upload`：本机上传，文件字节保存在服务端 `UPLOAD_DIR/<project_id>/<document_id>`，`file_path` 只保存相对路径；
+- `url`：从文件直链导入，只保存元数据和原始链接，不保存字节。
+
+导入时服务端提取文档文本存进 `extracted_text`（PDF / docx / xlsx / pptx / 纯文本，其余格式标记为不支持），对话和 AI 整理都基于这份文本，不再碰原文件。提取文本按 `DOCUMENT_TEXT_MAX_CHARS` 截断入库，交给模型的上下文再按 `DOCUMENT_CONTEXT_MAX_CHARS` 截断。
+
+## 41.2 表结构
+
+```sql
+action_documents
+```
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| project_id | uuid | NO | - | Project |
+| action_id | uuid | NO | - | 所属资料行动，删除行动时级联删除 |
+| name | varchar(500) | NO | - | 显示名称 |
+| source | varchar(20) | NO | 'upload' | upload / url |
+| mime_type | varchar(200) | YES | - | MIME 类型 |
+| file_path | text | YES | - | 相对存储路径，仅 upload 来源 |
+| file_url | text | YES | - | 原始链接，仅 url 来源 |
+| file_size | bigint | YES | - | 字节数 |
+| extracted_text | text | YES | - | 服务端提取的文本 |
+| parse_status | varchar(30) | NO | 'pending' | 解析状态 |
+| parse_error | text | YES | - | 解析失败原因 |
+| uploaded_by | uuid | YES | - | 上传用户 |
+| created_at | timestamptz | NO | now() | 创建时间 |
+
+```text
+INDEX(action_id, created_at)
+INDEX(project_id)
+```
+
+## 41.3 解析状态
+
+```text
+pending     还没有解析
+ok          已提取文本（extracted_text 可能为空文本）
+unsupported 格式不支持文本提取（图片等）
+failed      解析过程出错（parse_error 记录原因）
+```
+
+`unsupported` 不是错误：这份文档仍然可以预览和交给用户，只是智能体读不到它的内容，只能依靠文件名和用户整理的结论。
+
+## 41.4 生命周期约束
+
+上传、导入和删除只在行动处于 `pending` / `running` 时开放。资料完成提交后文档定稿，列表仍然可见、可以预览，但不再允许增删，避免 Observation 提交后资料又悄悄变化。
+
+---
+
+# 42. 最终原则
 
 LOOP 数据库设计遵循一句话：
 
@@ -2048,6 +2105,7 @@ Schedule
 
 ## 修改历史
 
+- 2026-10-14：新增第 41 节 `action_documents` 表，资料行动支持上传文件与 URL 导入，服务端提取文本入库，供资料对话与 AI 整理使用；上传和删除只在行动未结束时开放。
 - 2026-10-12：`observations.type` 增加 `conversation`（0009），Chat 对话讨论的“问题 + 回复”作为一条观察触发思考。
 - 2026-10-12：移除腾讯会议集成，删除 `user_integrations` 与 `action_meeting_syncs` 表及配套接口；会议 Action 的记录回归手工填写。
 - 2026-10-05：新增第 38 节“可靠性支撑表”，把 `idempotency_keys`、`schedule_occurrences`、`project_locks` 纳入数据模型；这三张表分别是 HTTP 幂等、Schedule 去重和 Project 运行锁的落地方式。

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import { after, before, test } from 'node:test'
 import type { AgentEngine } from '../src/agent/engine.js'
@@ -7,6 +8,8 @@ import type { AgentEngine } from '../src/agent/engine.js'
 const dataDir = path.resolve(import.meta.dirname, '../.data/test-pglite')
 fs.rmSync(dataDir, { recursive: true, force: true })
 process.env.PGDATA_DIR = dataDir
+// 上传的测试文件也留在测试目录里,不污染开发环境的 .data/uploads
+process.env.UPLOAD_DIR = path.resolve(dataDir, 'uploads')
 delete process.env.DATABASE_URL
 process.env.WORKER_ENABLED = 'false'
 
@@ -650,6 +653,9 @@ test('Agent Run 会把工具执行器传给 Engine,工具副作用真实落库',
     async converse() {
       throw new Error('这个测试不使用对话')
     },
+    async organize() {
+      throw new Error('这个测试不使用整理')
+    },
     async run(input, tools) {
       if (!tools) throw new Error('没有拿到工具执行器')
       const created = (await tools.execute('create_action', {
@@ -877,4 +883,226 @@ test('Action 详情带出来源(触发信息与智能体判断)', async () => {
   assert.ok(detail.json.source.run.observation)
   assert.match(detail.json.source.run.observation.content, /第三轮实验/)
   assert.ok(detail.json.source.run.judgment)
+})
+
+// ---------- 资料(kind=document):文档上传、解析、对话与 AI 整理 ----------
+
+const fixturesDir = path.resolve(import.meta.dirname, 'fixtures')
+
+interface UploadFile {
+  field: string
+  filename: string
+  content: Buffer
+  mime: string
+}
+
+function multipartBody(files: UploadFile[]): { body: Buffer; contentType: string } {
+  const boundary = '----loop-test-boundary'
+  const chunks: Buffer[] = []
+  for (const file of files) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\ncontent-disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\ncontent-type: ${file.mime}\r\n\r\n`,
+      ),
+    )
+    chunks.push(file.content)
+    chunks.push(Buffer.from('\r\n'))
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`))
+  return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+async function uploadFiles(
+  actionId: string,
+  files: UploadFile[],
+  userId: string = devUserId,
+): Promise<{ status: number; json: any }> {
+  const form = multipartBody(files)
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/v1/projects/${projectId}/actions/${actionId}/documents/upload`,
+    headers: { 'x-user-id': userId, 'content-type': form.contentType },
+    payload: form.body,
+  })
+  return { status: response.statusCode, json: response.body ? JSON.parse(response.body) : null }
+}
+
+let documentActionId = ''
+
+test('资料行动可以上传文档,解析文本入库并取回文件字节', async () => {
+  const created = await api('POST', `/api/v1/projects/${projectId}/actions`, {
+    title: '整理实验报告资料',
+    kind: 'document',
+  })
+  assert.equal(created.json.kind, 'document')
+  documentActionId = created.json.id
+
+  const txt = fs.readFileSync(path.join(fixturesDir, 'sample.txt'))
+  const docx = fs.readFileSync(path.join(fixturesDir, 'sample.docx'))
+  const upload = await uploadFiles(documentActionId, [
+    { field: 'files', filename: 'sample.txt', content: txt, mime: 'text/plain' },
+    {
+      field: 'files',
+      filename: '实验记录.docx',
+      content: docx,
+      mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    },
+  ])
+  assert.equal(upload.status, 201)
+  assert.equal(upload.json.items.length, 2)
+  assert.ok(upload.json.items.every((doc: { parse_status: string }) => doc.parse_status === 'ok'))
+
+  const detail = await api('GET', `/api/v1/projects/${projectId}/actions/${documentActionId}`)
+  assert.equal(detail.json.documents.length, 2)
+  const txtDoc = detail.json.documents.find((doc: { name: string }) => doc.name === 'sample.txt')
+  assert.ok(txtDoc)
+  assert.ok(txtDoc.extracted_chars > 0)
+
+  // 不支持的格式标记为 unsupported,并可以删除
+  const png = fs.readFileSync(path.join(fixturesDir, 'sample.png'))
+  const pngUpload = await uploadFiles(documentActionId, [
+    { field: 'files', filename: 'photo.png', content: png, mime: 'image/png' },
+  ])
+  assert.equal(pngUpload.json.items[0].parse_status, 'unsupported')
+  // DELETE 不带 content-type,空 body 配 application/json 会被 Fastify 拒绝
+  const removed = await app.inject({
+    method: 'DELETE',
+    url: `/api/v1/projects/${projectId}/actions/${documentActionId}/documents/${pngUpload.json.items[0].id}`,
+    headers: { 'x-user-id': devUserId },
+  })
+  assert.equal(removed.statusCode, 204)
+
+  // 上传的文件字节可以通过接口原样取回
+  const file = await app.inject({
+    method: 'GET',
+    url: `/api/v1/projects/${projectId}/actions/${documentActionId}/documents/${txtDoc.id}/file`,
+    headers: { 'x-user-id': devUserId },
+  })
+  assert.equal(file.statusCode, 200)
+  assert.ok(file.rawPayload.equals(txt))
+})
+
+test('URL 导入只存元数据并解析文本,没有本地文件', async () => {
+  const docx = fs.readFileSync(path.join(fixturesDir, 'sample.docx'))
+  const server = http.createServer((req, res) => {
+    if (req.url === '/report.docx') {
+      res.writeHead(200, {
+        'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      res.end(docx)
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = (server.address() as { port: number }).port
+
+  try {
+    const imported = await api(
+      'POST',
+      `/api/v1/projects/${projectId}/actions/${documentActionId}/documents/import-url`,
+      { url: `http://127.0.0.1:${port}/report.docx` },
+    )
+    assert.equal(imported.status, 201)
+    assert.equal(imported.json.source, 'url')
+    assert.equal(imported.json.parse_status, 'ok')
+    assert.equal(imported.json.name, 'report.docx')
+
+    // URL 来源不保存字节,文件接口返回 404
+    const file = await api(
+      'GET',
+      `/api/v1/projects/${projectId}/actions/${documentActionId}/documents/${imported.json.id}/file`,
+    )
+    assert.equal(file.status, 404)
+  } finally {
+    server.close()
+  }
+})
+
+test('AI 整理基于文档文本生成草稿,空资料行动会被拒绝', async () => {
+  const organize = await api(
+    'POST',
+    `/api/v1/projects/${projectId}/actions/${documentActionId}/organize`,
+    { instruction: '重点看第二轮数据' },
+  )
+  assert.equal(organize.status, 200)
+  assert.ok(organize.json.summary)
+  assert.ok(organize.json.key_points.length >= 1)
+  assert.match(`${organize.json.key_points.join(';')}${organize.json.content}`, /sample\.txt/)
+
+  // 没有可解析文档的资料行动无法整理
+  const empty = await api('POST', `/api/v1/projects/${projectId}/actions`, {
+    title: '还没有资料的整理行动',
+    kind: 'document',
+  })
+  const emptyOrganize = await api(
+    'POST',
+    `/api/v1/projects/${projectId}/actions/${empty.json.id}/organize`,
+    {},
+  )
+  assert.equal(emptyOrganize.status, 422)
+
+  // 非资料行动不能整理
+  const task = await api('POST', `/api/v1/projects/${projectId}/actions`, {
+    title: '普通任务',
+    kind: 'task',
+  })
+  const taskOrganize = await api(
+    'POST',
+    `/api/v1/projects/${projectId}/actions/${task.json.id}/organize`,
+    {},
+  )
+  assert.equal(taskOrganize.status, 422)
+})
+
+test('带资料上下文的对话引用文档内容,消息记录资料来源', async () => {
+  const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+    content: '这份资料说明了什么?',
+    document_id: documentActionId,
+  })
+  assert.equal(chat.status, 200)
+  assert.match(chat.json.reply, /sample\.txt/)
+
+  const messages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${chat.json.session_id}/messages`,
+  )
+  assert.equal(messages.json.items[0].metadata.document_id, documentActionId)
+})
+
+test('完成资料行动时 Observation 带上要点和文件名', async () => {
+  const completed = await api(
+    'POST',
+    `/api/v1/projects/${projectId}/actions/${documentActionId}/complete`,
+    {
+      result: {
+        summary: '资料整理完成',
+        output: { key_points: ['第二轮数据已回收,结论待确认'], content: '详见文档正文' },
+      },
+    },
+  )
+  assert.equal(completed.json.status, 'completed')
+
+  const observation = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/observations/${completed.json.observation_id}`,
+  )
+  assert.match(observation.json.content, /要点:第二轮数据已回收,结论待确认/)
+  assert.match(observation.json.content, /文件:sample\.txt、实验记录\.docx、report\.docx/)
+})
+
+test('行动结束后不能再修改文档,非成员没有上传权限', async () => {
+  const txt = fs.readFileSync(path.join(fixturesDir, 'sample.txt'))
+  const upload = await uploadFiles(documentActionId, [
+    { field: 'files', filename: 'late.txt', content: txt, mime: 'text/plain' },
+  ])
+  assert.equal(upload.status, 409)
+
+  const outsiderUpload = await uploadFiles(
+    documentActionId,
+    [{ field: 'files', filename: 'late.txt', content: txt, mime: 'text/plain' }],
+    secondUserId,
+  )
+  assert.equal(outsiderUpload.status, 403)
 })

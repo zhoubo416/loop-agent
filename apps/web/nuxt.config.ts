@@ -2,7 +2,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-10-05',
   devtools: { enabled: false },
   modules: ['@nuxt/ui'],
-  css: ['~/assets/css/main.css'],
+  css: ['~/assets/css/main.css', '@open-file-viewer/core/style.css'],
   runtimeConfig: {
     public: {
       // 后端 API 地址,默认指向本地 API 服务

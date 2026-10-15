@@ -33,7 +33,19 @@ const { data: sessions, pending: sessionsPending, refresh: refreshSessions } = a
   () => api.get<{ items: SessionItem[] }>(`/projects/${projectId.value}/sessions?type=chat`),
 )
 
-const sessionId = ref<string | null>(sessions.value?.items[0]?.id ?? null)
+// 从资料页带 ?doc= 进入:默认开新对话,并把资料文本作为上下文随每条消息发送
+const pinnedDoc = ref<{ id: string; title: string } | null>(null)
+const docParam = route.query.doc as string | undefined
+if (docParam) {
+  const docAction = await api
+    .get<{ id: string; title: string }>(`/projects/${projectId.value}/actions/${docParam}`)
+    .catch(() => null)
+  if (docAction) pinnedDoc.value = { id: docAction.id, title: docAction.title }
+}
+
+const sessionId = ref<string | null>(
+  pinnedDoc.value ? null : sessions.value?.items[0]?.id ?? null,
+)
 const messages = ref<MessageItem[]>([])
 const draft = ref('')
 const sending = ref(false)
@@ -75,6 +87,8 @@ async function loadMessages(id: string) {
 function switchSession(id: string) {
   if (id === sessionId.value || sending.value) return
   sessionId.value = id
+  // 资料上下文只属于从资料页开始的那段对话,切到历史会话就摘掉
+  pinnedDoc.value = null
   void loadMessages(id)
 }
 
@@ -108,6 +122,7 @@ async function send() {
     }>(`/projects/${projectId.value}/chat`, {
       content,
       ...(sessionId.value ? { session_id: sessionId.value } : {}),
+      ...(pinnedDoc.value ? { document_id: pinnedDoc.value.id } : {}),
     })
     sessionId.value = response.session_id
     // 对话回复立即进入消息流,思考在后台异步进行
@@ -259,13 +274,34 @@ async function send() {
         </div>
 
         <div class="shrink-0">
+          <div
+            v-if="pinnedDoc"
+            class="mb-2 flex items-center gap-2 rounded-xl bg-elevated/60 px-3 py-2 text-sm"
+          >
+            <UIcon name="i-lucide-file-text" class="size-4 shrink-0 text-muted" />
+            <span class="min-w-0 flex-1 truncate">资料:{{ pinnedDoc.title }}</span>
+            <ULink
+              :to="`/projects/${projectId}/documents/${pinnedDoc.id}`"
+              class="shrink-0 text-xs text-muted hover:text-default"
+            >
+              查看
+            </ULink>
+            <button
+              type="button"
+              class="shrink-0 rounded p-0.5 text-muted transition-colors hover:text-default"
+              title="不再带这份资料讨论"
+              @click="pinnedDoc = null"
+            >
+              <UIcon name="i-lucide-x" class="size-4" />
+            </button>
+          </div>
           <div class="lo-input-shell">
             <UTextarea
               v-model="draft"
               :rows="3"
               variant="none"
               class="w-full"
-              placeholder="和智能体讨论项目…(⌘/Ctrl + 回车发送)"
+              :placeholder="pinnedDoc ? '和智能体讨论这份资料…(⌘/Ctrl + 回车发送)' : '和智能体讨论项目…(⌘/Ctrl + 回车发送)'"
               @keydown.meta.enter.prevent="send"
               @keydown.ctrl.enter.prevent="send"
             />

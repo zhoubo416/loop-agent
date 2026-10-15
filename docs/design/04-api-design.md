@@ -481,7 +481,8 @@ POST /api/v1/projects/{project_id}/chat
 {
   "session_id": "session-id",
   "content": "第二轮实验为什么会出现异常？",
-  "idempotency_key": "client-request-001"
+  "idempotency_key": "client-request-001",
+  "document_id": "资料行动 ID(可选)"
 }
 ```
 
@@ -497,6 +498,8 @@ POST /api/v1/projects/{project_id}/chat
 ```
 
 `reply` 是这次讨论的即时回复。回复完成后，服务端把这段会话的全部问答记录（“我：… / 智能体：…”逐条）提交为一条 `conversation` Observation 并创建思考 Run；思考坚持宁缺毋滥，没有新信息的讨论只产生判断，不产出事件、提案、行动或建议。对话调用失败时不落任何消息，用户直接重发即可。
+
+从资料页进入对话时，请求携带可选的 `document_id`（资料行动 ID）：服务端校验它属于本项目且 `kind=document`，把该资料的文档文本（截断到 `DOCUMENT_CONTEXT_MAX_CHARS`）作为对话上下文一并交给 Engine，并把 `document_id` 记进这条 user 消息的 metadata。资料上下文只影响对话回复，不改变“对话产生 conversation Observation”的思考链路。
 
 ---
 
@@ -1836,6 +1839,23 @@ POST   /api/v1/dev-login
 - Action 带 `kind`（task / meeting / document），`POST /actions` 创建时指定；`POST /actions/{id}/complete` 的 `result.output` 接收该类型对应的结构化字段（会议：participants/decisions/action_items，资料：key_points/content，任务：results/blockers），Runtime 会把结构化结果整理进 Observation。
 - `GET /projects/{project_id}/actions/{action_id}` 额外返回 `source`（来源事件、建议、触发观察与智能体判断）和 `analysis`（该 Action 完成后智能体后续运行的分析结论），供详情页展示“为什么产生这个 Action”和“执行之后智能体怎么看”。
 
+资料（kind=document）行动的文档与整理接口：
+
+```text
+POST   /api/v1/projects/{project_id}/actions/{action_id}/documents/upload
+POST   /api/v1/projects/{project_id}/actions/{action_id}/documents/import-url
+GET    /api/v1/projects/{project_id}/actions/{action_id}/documents/{document_id}/file
+DELETE /api/v1/projects/{project_id}/actions/{action_id}/documents/{document_id}
+POST   /api/v1/projects/{project_id}/actions/{action_id}/organize
+```
+
+- `POST /documents/upload` 是 multipart 请求，字段名 `files`，支持一次多文件；单文件大小上限 `UPLOAD_MAX_BYTES`（默认 25MB），一次最多 10 个，任何一个文件超限整个请求失败、不留下部分结果。服务端同步提取文本入库，响应 `201 { items }`。
+- `POST /documents/import-url` 接收 `{ url, name? }`，只支持 http/https 直链，抓取受超时与大小上限约束；导入后只保存元数据与提取文本，不保存字节。
+- `GET /documents/{document_id}/file` 只对 upload 来源有效，校验项目访问后流式返回文件字节（inline）。URL 来源没有本地文件，前端直接用原链接预览。
+- 文档元数据列表随 `GET /actions/{action_id}` 的 `documents` 字段返回（名称、来源、大小、`parse_status`、`extracted_chars`、解析错误），不带全文。
+- 上传、导入和删除只在行动处于 `pending` / `running` 时开放；完成后文档定稿，仍然可见可预览，但不再允许增删。
+- `POST /organize` 是 AI 整理：把资料的文档文本交给 Engine，返回 `{ summary, key_points, content }` 草稿。草稿不落库、不触发 Agent Run，由用户在详情页修订后随 `complete` 一起提交；没有可解析文本的资料行动返回 422。
+
 登录与注册：
 
 ```text
@@ -1912,6 +1932,7 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-14：第 47 节补充资料文档接口（上传、URL 导入、文件下载、删除）与 `POST /organize` AI 整理接口；第 12 节 Chat 请求增加可选 `document_id`，支持把资料文本作为对话上下文。
 - 2026-10-13：第 12 节补充多会话支持：`GET /sessions` 携带 `preview` 与 `message_count` 并按创建时间倒序，`POST /chat` 不带 `session_id` 时创建新会话。
 - 2026-10-12：第 12 节 Chat API 更新为“对话 + 思考分离”：`POST /chat` 同步返回讨论回复，回复后自动提交 `conversation` Observation 触发思考；新增 `GET /sessions/{id}/runs` 提供思考结果。
 - 2026-10-12：移除腾讯会议 Token 配置和 meeting Action 按需同步接口，会议记录回归手工填写。
