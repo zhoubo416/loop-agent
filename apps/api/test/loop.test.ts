@@ -203,9 +203,12 @@ test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸�
   assert.equal(insight.status, 'completed')
   assert.match(insight.judgment, /第一轮实验/)
   assert.equal(insight.state_proposals.length, 1)
-  assert.equal(insight.proposed_actions.length, 1)
+  assert.equal(insight.actions.length, 1)
   assert.equal(insight.events.length, 1)
   assert.equal(insight.recommendations.length, 1)
+  assert.equal(insight.state_proposals[0].status, 'pending')
+  assert.equal(insight.actions[0].status, 'proposed')
+  assert.equal(insight.recommendations[0].status, 'pending')
 
   const state = await api('GET', `/api/v1/projects/${projectId}/state`)
   assert.match(state.json.current_situation, /第一轮实验/)
@@ -243,7 +246,7 @@ test('没有新信息的讨论只给判断,不产出任何项目变更', async (
   assert.match(insight.judgment, /没有带来需要记录的新信息/)
   assert.equal(insight.state_proposals.length, 0)
   assert.equal(insight.events.length, 0)
-  assert.equal(insight.proposed_actions.length, 0)
+  assert.equal(insight.actions.length, 0)
   assert.equal(insight.recommendations.length, 0)
 })
 
@@ -1309,4 +1312,47 @@ test('对话说到一半失败:保留半截回复,但不触发思考', async () 
   )
   assert.match(observation.json.content, /模拟中断/)
   assert.doesNotMatch(observation.json.content, /scripted 半截回复/)
+})
+
+test('思考结果里的产出处理过之后仍然保留,只是换成处理结果', async () => {
+  const turn = await sendChat(projectId, { content: '保留测试:这轮实验出了问题,数据也不对。' })
+  await drainWorker()
+
+  const before = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${turn.session_id}/runs`,
+  )
+  const insight = before.json.items[0]
+  assert.equal(insight.state_proposals.length, 1)
+  assert.equal(insight.actions.length, 1)
+  assert.equal(insight.events.length, 1)
+  assert.equal(insight.recommendations.length, 1)
+  assert.equal(insight.state_proposals[0].status, 'pending')
+  assert.equal(insight.actions[0].status, 'proposed')
+  assert.equal(insight.recommendations[0].status, 'pending')
+
+  await api(
+    'POST',
+    `/api/v1/projects/${projectId}/state/proposals/${insight.state_proposals[0].id}/apply`,
+    {},
+  )
+  await api('POST', `/api/v1/projects/${projectId}/actions/${insight.actions[0].id}/confirm`, {})
+  await api(
+    'POST',
+    `/api/v1/projects/${projectId}/recommendations/${insight.recommendations[0].id}/reject`,
+    {},
+  )
+
+  // 处理完不是从这一栏消失,而是换成状态:要能回看整轮思考产出了什么、当时怎么处理的
+  const after = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${turn.session_id}/runs`,
+  )
+  const resolved = after.json.items[0]
+  assert.equal(resolved.state_proposals.length, 1)
+  assert.equal(resolved.state_proposals[0].status, 'applied')
+  assert.equal(resolved.actions.length, 1)
+  assert.equal(resolved.actions[0].status, 'pending')
+  assert.equal(resolved.recommendations.length, 1)
+  assert.equal(resolved.recommendations[0].status, 'rejected')
 })

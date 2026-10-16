@@ -524,6 +524,8 @@ GET /api/v1/projects/{project_id}/sessions/{session_id}/runs
 
 返回该会话最近几次思考 Run 及其产出：`judgment`、State 提案、新事件、行动和建议，供 Chat 页右侧面板展示并直接操作。
 
+产出处理过之后仍然返回，并各自带上 `status`，由前端决定是给「应用 / 确认 / 接受」按钮，还是显示处理结果（`applied`、`cancelled`、`executed`、`rejected` 等）。这一栏要能完整回看每轮思考产出了什么、用户当时是怎么处理的，不能点完「应用」就把这条抹掉。同一轮里由「接受并生成行动」产生的行动也带着这条 Run 的 `agent_run_id`，所以会作为一条 `pending` 行动跟着出现在同一张卡片里。
+
 `GET /sessions` 的每项额外携带 `preview`（首条 user 消息内容，前端截断作会话标题）与 `message_count`，按创建时间倒序返回（最新在前）；`POST /chat` 不带 `session_id` 即创建新会话，支持一个 Project 下的多段对话。
 
 ---
@@ -1947,6 +1949,7 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-16：第 12 节的会话思考结果改为返回本轮全部产出（不再只取待处理状态），每条带 `status`，处理过的保留在原位显示结果；行动数组由 `proposed_actions` 改名为 `actions`。
 - 2026-10-16：第 12 节 `POST /chat` 增加 `reasoning` 事件，模型的推理过程单独下发并随消息存进 `metadata.reasoning`，只用于展示。
 - 2026-10-16：第 12 节 `POST /chat` 的响应改为 SSE 流（`session` / `delta` / `done` / `error` 事件）；补充两种失败情形的约定（未输出内容时返回普通 JSON 错误，输出到一半失败时保留半截回复并标记中断），以及幂等键重复提交的回放方式。第 37 节补充说明对话的 SSE 响应与服务端主动推送的区别。
 - 2026-10-15：第 47 节的通知接口补充 `project_id` 范围参数，列表、未读数与 read-all 都可以只看一个 Project。

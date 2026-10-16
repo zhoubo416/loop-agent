@@ -53,7 +53,10 @@ const filtered = computed(() => {
 })
 
 const error = ref('')
+/** 新增行动的弹窗 */
 const busy = ref(false)
+/** 正在处理的那一行:对应按钮转圈,同一行的其它操作先禁用 */
+const pendingId = ref<string | null>(null)
 
 const userOptions = computed(() =>
   (users.value?.items ?? []).map((user) => ({ label: user.name, value: user.id })),
@@ -81,20 +84,21 @@ const createForm = reactive({
   assignee_id: '',
 })
 
-async function withBusy(fn: () => Promise<void>) {
-  busy.value = true
+async function withBusy(id: string, fn: () => Promise<void>) {
+  if (pendingId.value) return
+  pendingId.value = id
   error.value = ''
   try {
     await fn()
   } catch (caught) {
     error.value = (caught as Error).message
   } finally {
-    busy.value = false
+    pendingId.value = null
   }
 }
 
 function assign(action: ActionItem, userId: string) {
-  void withBusy(async () => {
+  void withBusy(action.id, async () => {
     await api.patch(`/projects/${projectId.value}/actions/${action.id}`, {
       assignee_id: userId || null,
     })
@@ -103,14 +107,14 @@ function assign(action: ActionItem, userId: string) {
 }
 
 function confirm(action: ActionItem) {
-  void withBusy(async () => {
+  void withBusy(action.id, async () => {
     await api.post(`/projects/${projectId.value}/actions/${action.id}/confirm`, {})
     await refresh()
   })
 }
 
 function decline(action: ActionItem) {
-  void withBusy(async () => {
+  void withBusy(action.id, async () => {
     await api.post(`/projects/${projectId.value}/actions/${action.id}/decline`, {})
     await refresh()
   })
@@ -202,8 +206,21 @@ async function create() {
           v-if="action.status === 'proposed'"
           class="mt-2 flex flex-wrap items-center gap-2"
         >
-          <UButton size="xs" :disabled="busy" @click="confirm(action)">确认</UButton>
-          <UButton size="xs" color="error" variant="ghost" :disabled="busy" @click="decline(action)">
+          <UButton
+            size="xs"
+            :loading="pendingId === action.id"
+            :disabled="pendingId !== null"
+            @click="confirm(action)"
+          >
+            确认
+          </UButton>
+          <UButton
+            size="xs"
+            color="error"
+            variant="ghost"
+            :disabled="pendingId !== null"
+            @click="decline(action)"
+          >
             拒绝
           </UButton>
         </div>
@@ -218,7 +235,8 @@ async function create() {
             size="xs"
             placeholder="未指派"
             class="w-32"
-            :disabled="busy"
+            :loading="pendingId === action.id"
+            :disabled="pendingId !== null"
             @update:model-value="(value: string) => assign(action, value)"
           />
           <UButton

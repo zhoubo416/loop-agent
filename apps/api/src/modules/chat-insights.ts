@@ -7,10 +7,16 @@ export interface ChatRunInsight {
   created_at: string
   error: { code?: string; message?: string } | null
   judgment: string | null
-  state_proposals: Array<{ id: string; proposal: Record<string, unknown> }>
+  state_proposals: Array<{ id: string; proposal: Record<string, unknown>; status: string }>
   events: Array<{ id: string; title: string }>
-  proposed_actions: Array<{ id: string; title: string; kind: string; priority: string }>
-  recommendations: Array<{ id: string; type: string; content: string; priority: string }>
+  actions: Array<{ id: string; title: string; kind: string; priority: string; status: string }>
+  recommendations: Array<{
+    id: string
+    type: string
+    content: string
+    priority: string
+    status: string
+  }>
 }
 
 interface RunErrorColumn {
@@ -19,7 +25,10 @@ interface RunErrorColumn {
 
 /**
  * Chat 页右侧的思考结果:每个由对话触发的 Agent Run 一条,
- * 附带它产出的待确认 State 提案、新事件、行动提议和建议。
+ * 附带它产出的 State 提案、新事件、行动和建议。
+ *
+ * 产出处理过之后仍然返回,并带上各自的状态:这一栏要能回看整轮思考产出了什么、
+ * 用户当时怎么处理的,不能在点完「应用」之后就把这条抹掉。前端据此决定给按钮还是给状态标签。
  */
 export async function listChatRunInsights(
   db: Db,
@@ -35,23 +44,23 @@ async function toInsight(db: Db, run: AgentRunRow): Promise<ChatRunInsight> {
   const errorColumn = run as unknown as RunErrorColumn
 
   const [proposals, events, actions, recommendations] = await Promise.all([
-    db.query<{ id: string; proposal: Record<string, unknown> }>(
-      `SELECT id, proposal FROM state_proposals
-       WHERE agent_run_id = $1 AND status = 'pending' ORDER BY created_at`,
+    db.query<{ id: string; proposal: Record<string, unknown>; status: string }>(
+      `SELECT id, proposal, status FROM state_proposals
+       WHERE agent_run_id = $1 ORDER BY created_at`,
       [run.id],
     ),
     db.query<{ id: string; title: string }>(
       `SELECT id, title FROM events WHERE agent_run_id = $1 ORDER BY occurred_at`,
       [run.id],
     ),
-    db.query<{ id: string; title: string; kind: string; priority: string }>(
-      `SELECT id, title, kind, priority FROM actions
-       WHERE agent_run_id = $1 AND status = 'proposed' ORDER BY created_at`,
+    db.query<{ id: string; title: string; kind: string; priority: string; status: string }>(
+      `SELECT id, title, kind, priority, status FROM actions
+       WHERE agent_run_id = $1 ORDER BY created_at`,
       [run.id],
     ),
-    db.query<{ id: string; type: string; content: string; priority: string }>(
-      `SELECT id, type, content, priority FROM recommendations
-       WHERE agent_run_id = $1 AND status = 'pending' ORDER BY created_at`,
+    db.query<{ id: string; type: string; content: string; priority: string; status: string }>(
+      `SELECT id, type, content, priority, status FROM recommendations
+       WHERE agent_run_id = $1 ORDER BY created_at`,
       [run.id],
     ),
   ])
@@ -64,7 +73,7 @@ async function toInsight(db: Db, run: AgentRunRow): Promise<ChatRunInsight> {
     judgment: output.judgment ?? null,
     state_proposals: proposals.rows,
     events: events.rows,
-    proposed_actions: actions.rows,
+    actions: actions.rows,
     recommendations: recommendations.rows,
   }
 }

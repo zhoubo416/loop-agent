@@ -5,10 +5,16 @@ interface InsightRun {
   created_at: string
   error: { code?: string; message?: string } | null
   judgment: string | null
-  state_proposals: Array<{ id: string; proposal: Record<string, unknown> }>
+  state_proposals: Array<{ id: string; proposal: Record<string, unknown>; status: string }>
   events: Array<{ id: string; title: string }>
-  proposed_actions: Array<{ id: string; title: string; kind: string; priority: string }>
-  recommendations: Array<{ id: string; type: string; content: string; priority: string }>
+  actions: Array<{ id: string; title: string; kind: string; priority: string; status: string }>
+  recommendations: Array<{
+    id: string
+    type: string
+    content: string
+    priority: string
+    status: string
+  }>
 }
 
 const props = defineProps<{ projectId: string; sessionId: string | null }>()
@@ -50,55 +56,56 @@ const loading = computed(
   () => !items.value.length && ['pending', 'idle'].includes(status.value),
 )
 
-const busy = ref(false)
+/** 正在处理的那条产出:对应的按钮转圈,其余按钮先禁用,避免同时改同一个项目状态 */
+const pendingId = ref<string | null>(null)
 const error = ref('')
 
 // 拉取失败和操作失败都在这条提示里说
 const message = computed(() => error.value || loadError.value?.message || '')
 
-async function withBusy(fn: () => Promise<void>) {
-  if (busy.value) return
-  busy.value = true
+async function withBusy(id: string, fn: () => Promise<void>) {
+  if (pendingId.value) return
+  pendingId.value = id
   error.value = ''
   try {
     await fn()
   } catch (caught) {
     error.value = (caught as Error).message
   } finally {
-    busy.value = false
+    pendingId.value = null
   }
 }
 
 function applyProposal(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/state/proposals/${id}/apply`, {})
     await refresh()
   })
 }
 
 function rejectProposal(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/state/proposals/${id}/reject`, {})
     await refresh()
   })
 }
 
 function confirmAction(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/actions/${id}/confirm`, {})
     await refresh()
   })
 }
 
 function declineAction(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/actions/${id}/decline`, {})
     await refresh()
   })
 }
 
 function acceptRecommendation(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/recommendations/${id}/accept`, {
       create_action: true,
     })
@@ -107,7 +114,7 @@ function acceptRecommendation(id: string) {
 }
 
 function rejectRecommendation(id: string) {
-  void withBusy(async () => {
+  void withBusy(id, async () => {
     await api.post(`/projects/${props.projectId}/recommendations/${id}/reject`, {})
     await refresh()
   })
@@ -159,22 +166,33 @@ defineExpose({ refresh })
             class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-default p-2"
           >
             <span class="text-sm">{{ proposalSummary(proposal.proposal).join(',') }}</span>
-            <div class="flex items-center gap-1.5">
-              <UButton size="xs" :disabled="busy" @click="applyProposal(proposal.id)">应用</UButton>
+            <!-- 还没处理的给按钮,处理过的留一条状态:这一栏要能回看整轮思考的产出 -->
+            <div v-if="proposal.status === 'pending'" class="flex items-center gap-1.5">
+              <UButton
+                size="xs"
+                :loading="pendingId === proposal.id"
+                :disabled="pendingId !== null"
+                @click="applyProposal(proposal.id)"
+              >
+                应用
+              </UButton>
               <UButton
                 size="xs"
                 color="neutral"
                 variant="ghost"
-                :disabled="busy"
+                :disabled="pendingId !== null"
                 @click="rejectProposal(proposal.id)"
               >
                 忽略
               </UButton>
             </div>
+            <UBadge v-else :color="statusColor(proposal.status)" variant="soft">
+              {{ statusLabel(proposal.status) }}
+            </UBadge>
           </div>
 
           <div
-            v-for="action in item.proposed_actions"
+            v-for="action in item.actions"
             :key="action.id"
             class="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-default p-2"
           >
@@ -184,18 +202,28 @@ defineExpose({ refresh })
                 {{ kindLabel(action.kind) }} · {{ priorityLabel(action.priority) }}
               </div>
             </div>
-            <div class="flex shrink-0 items-center gap-1.5">
-              <UButton size="xs" :disabled="busy" @click="confirmAction(action.id)">确认</UButton>
+            <div v-if="action.status === 'proposed'" class="flex shrink-0 items-center gap-1.5">
+              <UButton
+                size="xs"
+                :loading="pendingId === action.id"
+                :disabled="pendingId !== null"
+                @click="confirmAction(action.id)"
+              >
+                确认
+              </UButton>
               <UButton
                 size="xs"
                 color="error"
                 variant="ghost"
-                :disabled="busy"
+                :disabled="pendingId !== null"
                 @click="declineAction(action.id)"
               >
                 拒绝
               </UButton>
             </div>
+            <UBadge v-else :color="statusColor(action.status)" variant="soft" class="shrink-0">
+              {{ statusLabel(action.status) }}
+            </UBadge>
           </div>
 
           <div
@@ -205,10 +233,14 @@ defineExpose({ refresh })
           >
             <div class="flex flex-wrap items-center justify-between gap-2">
               <span class="text-sm">{{ recommendation.content }}</span>
-              <div class="flex shrink-0 items-center gap-1.5">
+              <div
+                v-if="recommendation.status === 'pending'"
+                class="flex shrink-0 items-center gap-1.5"
+              >
                 <UButton
                   size="xs"
-                  :disabled="busy"
+                  :loading="pendingId === recommendation.id"
+                  :disabled="pendingId !== null"
                   @click="acceptRecommendation(recommendation.id)"
                 >
                   接受并生成行动
@@ -217,12 +249,15 @@ defineExpose({ refresh })
                   size="xs"
                   color="neutral"
                   variant="ghost"
-                  :disabled="busy"
+                  :disabled="pendingId !== null"
                   @click="rejectRecommendation(recommendation.id)"
                 >
                   忽略
                 </UButton>
               </div>
+              <UBadge v-else :color="statusColor(recommendation.status)" variant="soft" class="shrink-0">
+                {{ statusLabel(recommendation.status) }}
+              </UBadge>
             </div>
           </div>
 
