@@ -1,6 +1,6 @@
 import { config } from './config.js'
 import { buildServer } from './http/server.js'
-import { closeDb, getDb } from './db/client.js'
+import { closeDb, getDb, withTransientRetry } from './db/client.js'
 import { runMigrations } from './db/migrate.js'
 import { ensureDevUser } from './db/seed.js'
 import { getEngine } from './agent/engine-factory.js'
@@ -11,7 +11,8 @@ import { cleanupStaleIdempotency } from './modules/idempotency.js'
 async function main(): Promise<void> {
   const db = getDb()
   await runMigrations({ quiet: true })
-  const user = await ensureDevUser()
+  // 同样是幂等的启动步骤(先查后插),连接抖一下可以整体重来,不该让服务起不来
+  const user = await withTransientRetry(() => ensureDevUser(), 3)
   const engine = getEngine()
   const engineHealth = await engine.healthCheck()
 

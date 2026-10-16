@@ -622,6 +622,7 @@ session_messages
 | role | varchar(30) | NO | - | 消息角色 |
 | content | text | NO | - | 内容 |
 | metadata | jsonb | NO | '{}' | 元信息 |
+| seq | integer | NO | 0 | 同一会话内的次序 |
 | created_at | timestamptz | NO | now() | 创建时间 |
 
 ### role
@@ -637,7 +638,10 @@ tool
 
 ```text
 INDEX(session_id, created_at)
+UNIQUE(session_id, seq)
 ```
+
+`seq` 是消息在一段会话里的稳定次序，同一事务写入的消息 `created_at` 可能完全相同，只有 `seq` 能定序。它由 `addMessage` 在插入语句里现算，写入时靠唯一约束兜底：同一会话里两条消息带着同一个 `seq` 只可能来自重复写入（例如连接断掉后重试了同一条 INSERT），这种数据会让人看不出对话的真实顺序，所以宁可让写入报错，也不允许它落库。
 
 ---
 
@@ -2105,6 +2109,7 @@ Schedule
 
 ## 修改历史
 
+- 2026-10-16：第 11 节补上 `session_messages.seq` 字段与 `UNIQUE(session_id, seq)` 约束（0012），说明它为什么必须唯一。
 - 2026-10-14：新增第 41 节 `action_documents` 表，资料行动支持上传文件与 URL 导入，服务端提取文本入库，供资料对话与 AI 整理使用；上传和删除只在行动未结束时开放。
 - 2026-10-12：`observations.type` 增加 `conversation`（0009），Chat 对话讨论的“问题 + 回复”作为一条观察触发思考。
 - 2026-10-12：移除腾讯会议集成，删除 `user_integrations` 与 `action_meeting_syncs` 表及配套接口；会议 Action 的记录回归手工填写。

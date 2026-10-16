@@ -43,10 +43,13 @@ class PgDb implements Db {
   }
 
   async query<T = Row>(sql: string, params: unknown[] = []): Promise<QueryResult<T>> {
-    return withTransientRetry(async () => {
+    const run = async () => {
       const result = await this.pool.query(sql, params.map(normalizeParam))
       return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 }
-    })
+    }
+    // 只有读语句能自动重试:写语句可能在服务端已经执行、只是响应没回来,
+    // 重试会把同一条写再做一遍,留下重复数据
+    return isReadOnlyStatement(sql) ? withTransientRetry(run) : run()
   }
 
   async exec(sql: string): Promise<void> {
@@ -54,11 +57,25 @@ class PgDb implements Db {
   }
 
   async transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-    return withTransientRetry(() => this.runTransaction(fn))
+    try {
+      return await this.runTransaction(fn)
+    } catch (error) {
+      // 事务在提交之前被连接中断:没提交的东西数据库会回滚,整段重来是安全的
+      if (!(error instanceof PreCommitConnectionError)) throw error
+      console.warn('[db] 事务在提交前被连接中断,重试一次:', error.message)
+      return this.runTransaction(fn)
+    }
   }
 
   private async runTransaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
+    let client: pg.PoolClient
+    try {
+      client = await this.pool.connect()
+    } catch (error) {
+      // 连接还没拿到就失败了:什么都没执行,重来是安全的
+      if (isTransientConnectionError(error)) throw new PreCommitConnectionError(error)
+      throw error
+    }
     // 连接在使用过程中被对端关闭时,先接住 error 事件,让 query 自己抛出可诊断的错误
     const onClientError = (error: Error) => {
       console.warn('[db] 连接出错:', error.message)
@@ -78,17 +95,24 @@ class PgDb implements Db {
       close: async () => {},
       describe: () => 'pg(transaction)',
     }
+    let committing = false
+    let broken = false
     try {
       await client.query('BEGIN')
       const result = await fn(tx)
+      committing = true
       await client.query('COMMIT')
       return result
     } catch (error) {
+      broken = isTransientConnectionError(error)
       await client.query('ROLLBACK').catch(() => {})
+      // COMMIT 已经发出去之后才失败时,"到底提交没提交"无法判断,不能重来
+      if (broken && !committing) throw new PreCommitConnectionError(error)
       throw error
     } finally {
       client.off('error', onClientError)
-      client.release()
+      // 连接坏了就不要还回池子里,免得下一条语句一定失败
+      client.release(broken ? new Error('连接已断开') : undefined)
     }
   }
 
@@ -196,18 +220,55 @@ function isTransientConnectionError(error: unknown): boolean {
   )
 }
 
+/** PostgreSQL 唯一约束冲突 */
+export function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string } | null | undefined)?.code === '23505'
+}
+
 /**
- * 托管数据库会回收空闲连接,重试一次可以吸收这类瞬时故障。
- * 只对连接层错误重试,业务错误(例如唯一约束冲突)不会被重试。
+ * 语句能不能自动重试。
+ *
+ * 只认 select:写语句可能在服务端已经执行、只是响应没回来,重试会把同一条写再做一遍。
+ * 认不出来的一律当成写(包括 WITH 开头的语句,它可能带写操作),宁可少重试也不要写重复数据。
  */
-async function withTransientRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn()
-  } catch (error) {
-    if (!isTransientConnectionError(error)) throw error
-    console.warn('[db] 检测到连接被断开,重试一次:', (error as Error).message)
-    return fn()
+export function isReadOnlyStatement(sql: string): boolean {
+  return /^\s*select\b/i.test(sql)
+}
+
+/**
+ * 事务在提交之前被连接中断。这时数据库会把没提交的东西回滚掉,
+ * 整段重来做一遍是安全的;提交阶段本身失败则不能重来,因为无法判断提交有没有生效。
+ */
+class PreCommitConnectionError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'PreCommitConnectionError'
   }
+}
+
+/**
+ * 对连接层错误重试。
+ *
+ * 只用在"重复执行没有副作用"的操作上:读语句、以及整体幂等的启动步骤(建表、migration、
+ * 开发用户兜底)。写语句不能走这里,原因见 isReadOnlyStatement。
+ * 业务错误(例如唯一约束冲突)不会被重试。
+ */
+export async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (!isTransientConnectionError(error)) throw error
+      lastError = error
+      if (attempt < attempts) {
+        console.warn(`[db] 检测到连接被断开,第 ${attempt} 次重试:`, (error as Error).message)
+        // 让池子把坏连接丢掉,隔一下再试
+        await new Promise((resolve) => setTimeout(resolve, 300 * attempt))
+      }
+    }
+  }
+  throw lastError
 }
 
 export { toJsonParam }

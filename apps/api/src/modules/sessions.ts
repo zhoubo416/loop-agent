@@ -1,5 +1,5 @@
 import { ApiError } from '../http/errors.js'
-import type { Db, Row } from '../db/client.js'
+import { isUniqueViolation, type Db, type Row } from '../db/client.js'
 
 export interface SessionRow extends Row {
   id: string
@@ -78,19 +78,24 @@ export async function addMessage(
   content: string,
   metadata: Record<string, unknown> = {},
 ): Promise<SessionMessageRow> {
-  // seq 保证同一会话内消息的稳定次序;user 消息的 seq 由 Runtime 在同事务里顺延
-  const next = await db.query<{ seq: number }>(
-    `SELECT coalesce(max(seq), 0) + 1 AS seq FROM session_messages WHERE session_id = $1`,
-    [sessionId],
-  )
-  const seq = next.rows[0]?.seq ?? 1
-  const result = await db.query<SessionMessageRow>(
-    `INSERT INTO session_messages (session_id, role, content, metadata, seq)
-     VALUES ($1, $2, $3, $4::jsonb, $5)
-     RETURNING *`,
-    [sessionId, role, content, JSON.stringify(metadata), seq],
-  )
-  return result.rows[0]!
+  // seq 是同一会话内的稳定次序。在一条语句里算出来再插入,不做"先查后插":
+  // 两次查询之间被别的写入穿插,两条消息会算出同一个 seq。
+  const maxAttempts = 3
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const result = await db.query<SessionMessageRow>(
+        `INSERT INTO session_messages (session_id, role, content, metadata, seq)
+         SELECT $1, $2, $3, $4::jsonb, coalesce(max(seq), 0) + 1
+         FROM session_messages WHERE session_id = $1
+         RETURNING *`,
+        [sessionId, role, content, JSON.stringify(metadata)],
+      )
+      return result.rows[0]!
+    } catch (error) {
+      // 真撞上并发时会被 (session_id, seq) 唯一约束挡住,重算一次 seq 再试
+      if (attempt + 1 >= maxAttempts || !isUniqueViolation(error)) throw error
+    }
+  }
 }
 
 export async function listMessages(

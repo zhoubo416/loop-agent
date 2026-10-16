@@ -1,10 +1,17 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDb, closeDb } from './client.js'
+import { getDb, closeDb, withTransientRetry } from './client.js'
 
 const migrationsDir = path.resolve(import.meta.dirname, 'migrations')
 
 export async function runMigrations(options: { quiet?: boolean } = {}): Promise<string[]> {
+  // 整段是幂等的:建表带 IF NOT EXISTS,已经跑过的 migration 记在 schema_migrations 里,
+  // 每个文件又在自己的事务里,所以连接抖一下可以整体重来。
+  // 不这样的话,托管数据库的一次瞬时断开会让服务直接起不来。
+  return withTransientRetry(() => migrateOnce(options), 3)
+}
+
+async function migrateOnce(options: { quiet?: boolean }): Promise<string[]> {
   const db = getDb()
   await db.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
