@@ -2,6 +2,8 @@ import {
   AgentEngineError,
   type AgentEngine,
   type AgentToolContext,
+  type ConverseDeltaKind,
+  type ConverseOptions,
 } from '../engine.js'
 import { parseAgentOutput, parseOrganizeOutput } from '../output-validator.js'
 import type {
@@ -119,7 +121,22 @@ export class PIAgentEngine implements AgentEngine {
     return this.parsePIOutput(final)
   }
 
-  async converse(input: ConversationInput): Promise<string> {
+  async converse(input: ConversationInput, options: ConverseOptions = {}): Promise<string> {
+    const messages = this.buildConversationMessages(input)
+
+    if (!options.onDelta) {
+      const response = await this.chat(messages)
+      if (response.content !== undefined) return response.content
+      throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
+        retryable: true,
+      })
+    }
+
+    return this.chatStream(messages, options.onDelta)
+  }
+
+  /** 对话模式的输入与历史消息 */
+  private buildConversationMessages(input: ConversationInput): ChatMessage[] {
     const projectLines = [
       `项目名称:${input.project.name}`,
       `项目目标:${input.project.objective}`,
@@ -136,16 +153,11 @@ export class PIAgentEngine implements AgentEngine {
         ...input.documents.map((doc) => `《${doc.name}》\n${doc.text}`),
       )
     }
-    const messages: ChatMessage[] = [
+    return [
       { role: 'system', content: `${CHAT_SYSTEM_PROMPT}\n\n${projectLines.join('\n')}` },
       ...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
       { role: 'user', content: input.question },
     ]
-    const response = await this.chat(messages)
-    if (response.content !== undefined) return response.content
-    throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
-      retryable: true,
-    })
   }
 
   async organize(input: OrganizeInput): Promise<OrganizeOutput> {
@@ -273,6 +285,201 @@ export class PIAgentEngine implements AgentEngine {
     })
   }
 
+  /**
+   * 流式对话:上游按 SSE 逐块返回,每收到一段文本就回调一次,返回值是完整的回复。
+   *
+   * 上游有两种情况会退回非流式:明确拒绝 stream 参数(报错),或者干脆忽略它、直接返回一个
+   * 完整的 JSON 响应。这两种情况下整段回复当作一个增量交出去。
+   * 重试只在还没有内容回调出去的时候做:已经显示给用户的内容收不回来。
+   */
+  private async chatStream(
+    messages: ChatMessage[],
+    emit: (text: string, kind: ConverseDeltaKind) => void,
+  ): Promise<string> {
+    let emitted = false
+    const delta = (text: string, kind: ConverseDeltaKind) => {
+      if (!text) return
+      emitted = true
+      emit(text, kind)
+    }
+
+    let lastError: AgentEngineError | undefined
+    for (let attempt = 0; attempt <= this.options.maxRetries; attempt += 1) {
+      try {
+        return await this.streamOnce(messages, delta)
+      } catch (error) {
+        if (!(error instanceof AgentEngineError)) throw error
+        if (error.code === 'ENGINE_FORMAT_UNSUPPORTED') {
+          const response = await this.chat(messages)
+          if (response.content === undefined) {
+            throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
+              retryable: true,
+            })
+          }
+          delta(response.content, 'content')
+          return response.content
+        }
+        if (!error.retryable || emitted) throw error
+        lastError = error
+        if (attempt < this.options.maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt))
+        }
+      }
+    }
+    throw lastError ?? new AgentEngineError('ENGINE_EXECUTION_ERROR', 'PI Agent 调用失败')
+  }
+
+  private async streamOnce(
+    messages: ChatMessage[],
+    emit: (text: string, kind: ConverseDeltaKind) => void,
+  ): Promise<string> {
+    const controller = new AbortController()
+    // 流式的超时按"多久没有新内容"算:只要上游还在持续产出,就不算超时
+    let timer = setTimeout(() => controller.abort(), this.options.timeoutMs)
+    const touch = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => controller.abort(), this.options.timeoutMs)
+    }
+
+    try {
+      const response = await fetch(`${this.options.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model: this.options.model,
+          temperature: 0.2,
+          stream: true,
+          messages,
+        }),
+        signal: controller.signal,
+      })
+
+      const failure = await this.httpError(response)
+      if (failure) throw failure
+
+      // 端点忽略了 stream 参数:按非流式解析,整段回复作为一个增量
+      if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+        const parsed = this.parseCompletion(await response.json())
+        if (parsed.content === undefined) {
+          throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
+            retryable: true,
+          })
+        }
+        emit(parsed.content, 'content')
+        return parsed.content
+      }
+      if (!response.body) {
+        throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回流式响应体', {
+          retryable: true,
+        })
+      }
+
+      let content = ''
+      let reasoning = ''
+      for await (const data of readSseData(response.body)) {
+        touch()
+        if (data === '[DONE]') break
+        let payload: {
+          choices?: Array<{
+            delta?: { content?: string | null; reasoning_content?: string | null }
+          }>
+        }
+        try {
+          payload = JSON.parse(data)
+        } catch {
+          continue // 单行解析不了就跳过,不因为一行坏数据丢掉整段回复
+        }
+        const piece = payload.choices?.[0]?.delta
+        if (piece?.content) {
+          content += piece.content
+          emit(piece.content, 'content')
+        }
+        // 推理过程边收边发,标成 reasoning 交给前端单独展示,不算回复正文
+        if (piece?.reasoning_content) {
+          reasoning += piece.reasoning_content
+          emit(piece.reasoning_content, 'reasoning')
+        }
+      }
+
+      if (content) return content
+      // 上游只给了推理、一个字正文都没有:整段推理当回复,否则用户等于什么都没拿到
+      if (reasoning) return reasoning
+      throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回对话内容', {
+        retryable: true,
+      })
+    } catch (error) {
+      if (error instanceof AgentEngineError) throw error
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new AgentEngineError('ENGINE_TIMEOUT', 'PI Agent 调用超时', { retryable: true })
+      }
+      throw new AgentEngineError('ENGINE_UNAVAILABLE', `PI Agent 调用失败:${String(error)}`, {
+        retryable: true,
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** HTTP 状态码 → Engine 错误,正常响应返回 null。流式与非流式共用同一套判断。 */
+  private async httpError(response: Response): Promise<AgentEngineError | null> {
+    if (response.status === 401 || response.status === 403) {
+      return new AgentEngineError('ENGINE_AUTH_ERROR', 'PI Agent 鉴权失败', { retryable: false })
+    }
+    if (response.status === 429) {
+      return new AgentEngineError('ENGINE_RATE_LIMITED', 'PI Agent 触发限流', { retryable: true })
+    }
+    if (response.status >= 500) {
+      return new AgentEngineError('ENGINE_UNAVAILABLE', `PI Agent 返回 ${response.status}`, {
+        retryable: true,
+      })
+    }
+    if (response.ok) return null
+
+    const body = await response.text().catch(() => '')
+    if (response.status === 400 && body.includes('response_format')) {
+      return new AgentEngineError('ENGINE_FORMAT_UNSUPPORTED', '该 Engine 不支持 JSON 输出模式', {
+        retryable: false,
+        details: body,
+      })
+    }
+    if (response.status === 400 && body.includes('stream')) {
+      return new AgentEngineError('ENGINE_FORMAT_UNSUPPORTED', '该 Engine 不支持流式输出', {
+        retryable: false,
+        details: body,
+      })
+    }
+    return new AgentEngineError('ENGINE_EXECUTION_ERROR', `PI Agent 返回 ${response.status}`, {
+      retryable: false,
+      details: body,
+    })
+  }
+
+  /** 非流式响应体 → 统一的 ChatResponse */
+  private parseCompletion(body: unknown): ChatResponse {
+    const message = (
+      body as {
+        choices?: Array<{
+          message?: {
+            content?: string
+            reasoning_content?: string
+            tool_calls?: ChatResponse['tool_calls']
+          }
+        }>
+      }
+    )?.choices?.[0]?.message
+    if (message?.tool_calls?.length) return { tool_calls: message.tool_calls }
+    const content = message?.content || message?.reasoning_content
+    if (!content) {
+      throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回内容', {
+        retryable: true,
+      })
+    }
+    return { content }
+  }
+
   private async chat(
     messages: ChatMessage[],
     options: { jsonMode?: boolean; tools?: unknown[] } = {},
@@ -315,49 +522,10 @@ export class PIAgentEngine implements AgentEngine {
         signal: controller.signal,
       })
 
-      if (response.status === 401 || response.status === 403) {
-        throw new AgentEngineError('ENGINE_AUTH_ERROR', 'PI Agent 鉴权失败', { retryable: false })
-      }
-      if (response.status === 429) {
-        throw new AgentEngineError('ENGINE_RATE_LIMITED', 'PI Agent 触发限流', { retryable: true })
-      }
-      if (response.status >= 500) {
-        throw new AgentEngineError('ENGINE_UNAVAILABLE', `PI Agent 返回 ${response.status}`, {
-          retryable: true,
-        })
-      }
-      if (!response.ok) {
-        const body = await response.text().catch(() => '')
-        if (response.status === 400 && body.includes('response_format')) {
-          throw new AgentEngineError('ENGINE_FORMAT_UNSUPPORTED', '该 Engine 不支持 JSON 输出模式', {
-            retryable: false,
-            details: body,
-          })
-        }
-        throw new AgentEngineError('ENGINE_EXECUTION_ERROR', `PI Agent 返回 ${response.status}`, {
-          retryable: false,
-          details: body,
-        })
-      }
+      const failure = await this.httpError(response)
+      if (failure) throw failure
 
-      const body = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string
-            reasoning_content?: string
-            tool_calls?: ChatResponse['tool_calls']
-          }
-        }>
-      }
-      const message = body.choices?.[0]?.message
-      if (message?.tool_calls?.length) return { tool_calls: message.tool_calls }
-      const content = message?.content || message?.reasoning_content
-      if (!content) {
-        throw new AgentEngineError('ENGINE_INVALID_OUTPUT', 'PI Agent 没有返回内容', {
-          retryable: true,
-        })
-      }
-      return { content }
+      return this.parseCompletion(await response.json())
     } catch (error) {
       if (error instanceof AgentEngineError) throw error
       if (error instanceof Error && error.name === 'AbortError') {
@@ -374,6 +542,38 @@ export class PIAgentEngine implements AgentEngine {
   /** PI 输出 → LOOP AgentOutput,格式变化只需要改这里 */
   private parsePIOutput(result: string): AgentOutput {
     return parseAgentOutput(stripCodeFence(result)).output
+  }
+}
+
+/**
+ * 把上游的 SSE 响应体读成一个个 data 负载。
+ * 事件之间用空行分隔,一个事件可以有多行 data,拼起来才是完整内容。
+ */
+async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      for (let match = /\r?\n\r?\n/.exec(buffer); match; match = /\r?\n\r?\n/.exec(buffer)) {
+        const raw = buffer.slice(0, match.index)
+        buffer = buffer.slice(match.index + match[0].length)
+        const data = raw
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice('data:'.length).trimStart())
+          .join('\n')
+        if (data) yield data
+      }
+    }
+  } finally {
+    // 调用方收完就 break(见到 [DONE])时,把上游连接一并释放
+    await reader.cancel().catch(() => {})
   }
 }
 

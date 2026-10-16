@@ -1945,7 +1945,7 @@ Phase 5  Observation       完成：统一入口，Chat 与 Action Result 都走
 Phase 6  State             完成：State Proposal、version 乐观锁、State 历史、人工确认
 Phase 7  Action + Execution 完成：创建、指派人、确认、拒绝、完成、失败、取消、事件关联
 Phase 8  Recommendation    完成：接受（可生成 Action）、拒绝、完成建议
-Phase 9  Chat              完成：多会话对话（converse 同步回复）+ “问题+回复”自动触发思考 + 右侧思考面板
+Phase 9  Chat              完成：多会话对话（converse 流式回复）+ “问题+回复”自动触发思考 + 右侧思考面板
 Phase 10 Timeline 与前端    完成：Overview、Chat、Timeline、Actions、Action Detail、Settings
 Phase 11 Schedule          完成：cron/interval/once/event，按执行窗口去重
 Phase 12 Memory            基础完成：create 与 query，未做语义检索
@@ -1969,6 +1969,8 @@ Action 不再只是翻状态：带 `kind`（task / meeting / document），完�
 
 资料页已经升级为完整的资料工作台：支持本机多文件上传和文件直链导入，服务端提取文本入库；文档用 Open File Viewer 预览；「去对话」把资料文本作为对话上下文带进 Chat；整理支持手工填写和「AI 整理」草稿修订，点「完成并交给智能体」才产生 Observation 触发思考。
 
+对话回复改成流式：`POST /chat` 用 SSE 逐段下发，前端边生成边显示，不再等整段回复生成完；换成推理型模型时，模型自己的推理过程也单独下发，可折叠地显示在回答上方，并随消息保存下来。这一条只覆盖对话回复本身；Run 状态、State 更新这类服务端主动推送仍然靠前端轮询（见 38.3）。
+
 ## 38.3 尚未实现
 
 以下能力不影响 Loop 闭环，留到后续阶段：
@@ -1985,6 +1987,7 @@ agent / system 两类 Action 执行器的自动执行
 
 ## 修改历史
 
+- 2026-10-16：第 38.2 节记录对话回复改为流式（SSE 逐段下发，前端边生成边显示），以及模型推理过程的折叠展示与保存。
 - 2026-10-14：第 38.2 节补充资料工作台的落地情况（文档上传/URL 导入、文本提取、Open File Viewer 预览、资料对话与 AI 整理）。
 - 2026-10-12：第 38.2 节更新 Chat 交互形态为对话与思考分离：对话同步回复，思考由对话自动触发并展示在页面右侧。
 - 2026-10-05：新增第 38 节，记录第一版实现选定的技术栈、仓库结构、阶段完成情况和尚未实现的能力。

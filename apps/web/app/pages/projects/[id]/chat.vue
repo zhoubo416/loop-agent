@@ -4,6 +4,8 @@ interface MessageItem {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   created_at: string
+  /** 半截回复带 interrupted 标记:留在对话里给用户看,不参与后续思考;reasoning 是模型的推理过程 */
+  metadata?: { interrupted?: boolean; reasoning?: string }
 }
 
 const route = useRoute()
@@ -24,6 +26,12 @@ const {
 const { unreadCount } = useNotifications(projectId)
 
 const messages = ref<MessageItem[]>([])
+/** 正在流式接收的回复:边收边显示,落库后用真实消息替换掉 */
+const streamingReply = ref('')
+/** 正在流式接收的模型推理过程,显示在回答上方 */
+const streamingReasoning = ref('')
+/** 推理过程的展开状态:默认展开,正文开始出现时收起一次 */
+const reasoningOpen = ref(true)
 const loadedSessionId = ref<string | null>(null)
 const loadingSession = ref(false)
 const pinnedDoc = ref<{ id: string; title: string } | null>(null)
@@ -60,6 +68,8 @@ async function loadSession(
 
   if (!silent) {
     messages.value = []
+    streamingReply.value = ''
+    streamingReasoning.value = ''
     error.value = ''
     loadingSession.value = id !== null
   }
@@ -118,6 +128,12 @@ watch(
   { immediate: true },
 )
 
+// 流式回复每长一段就跟到底部,这里不做动画,免得追着跳
+watch([streamingReply, streamingReasoning], async () => {
+  await nextTick()
+  scrollBox.value?.scrollTo({ top: scrollBox.value.scrollHeight, behavior: 'auto' })
+})
+
 function switchSession(id: string) {
   if (id === sessionId.value) return
   void navigateTo({ path: route.path, query: { session: id } })
@@ -137,6 +153,9 @@ async function send() {
 
   // 记下这条消息属于哪一段讨论:发送期间用户可能从侧边栏切走
   const sentSessionId = sessionId.value
+  let targetSessionId = sentSessionId
+  let received = ''
+  let runId: string | null = null
 
   messages.value.push({
     id: `pending-${Date.now()}`,
@@ -144,36 +163,53 @@ async function send() {
     content,
     created_at: new Date().toISOString(),
   })
+  streamingReply.value = ''
+  streamingReasoning.value = ''
+  reasoningOpen.value = true
 
   try {
-    const response = await api.post<{
-      session_id: string
-      reply: string
-      observation_id: string
-      agent_run_id: string | null
-    }>(`/projects/${projectId.value}/chat`, {
-      content,
-      ...(sentSessionId ? { session_id: sentSessionId } : {}),
-      ...(pinnedDoc.value ? { document_id: pinnedDoc.value.id } : {}),
-    })
+    await api.stream(
+      `/projects/${projectId.value}/chat`,
+      {
+        content,
+        ...(sentSessionId ? { session_id: sentSessionId } : {}),
+        ...(pinnedDoc.value ? { document_id: pinnedDoc.value.id } : {}),
+      },
+      (event, data) => {
+        // 用户切到别的会话后流还在走,但不再往屏幕上写,地址栏也留到最后一起改
+        const onScreen = sessionId.value === sentSessionId
+        if (event === 'session') {
+          targetSessionId = data.session_id
+        } else if (event === 'reasoning') {
+          if (onScreen) streamingReasoning.value += data.text
+        } else if (event === 'delta') {
+          // 正文开始出现,推理过程先收起来,不挡住回答;之后展开与否听用户的
+          if (onScreen && !received) reasoningOpen.value = false
+          received += data.text
+          if (onScreen) streamingReply.value = received
+        } else if (event === 'done') {
+          runId = data.agent_run_id
+        } else if (event === 'error') {
+          throw new Error(data.message)
+        }
+      },
+    )
 
     if (sessionId.value === sentSessionId) {
       // 这段是新会话:把 session 写进 URL,侧边栏高亮和刷新后的落点都跟着走
-      if (response.session_id !== sentSessionId) {
-        await router.replace({ query: { ...route.query, session: response.session_id } })
+      if (targetSessionId !== sentSessionId) {
+        await router.replace({ query: { ...route.query, session: targetSessionId } })
       }
-      await loadSession(response.session_id, { force: true, silent: true })
+      await loadSession(targetSessionId, { force: true, silent: true })
     }
-    // 对话回复立即进入消息流,思考在后台异步进行
     void refreshSessions()
 
-    if (response.agent_run_id) {
+    const finishedRunId = runId
+    if (finishedRunId) {
       void (async () => {
         try {
           await insights.value?.refresh()
-          await waitForRun(projectId.value, response.agent_run_id!, {
-            timeoutMs: 300_000,
-          })
+          await waitForRun(projectId.value, finishedRunId, { timeoutMs: 300_000 })
         } finally {
           await insights.value?.refresh()
         }
@@ -181,8 +217,17 @@ async function send() {
     }
   } catch (caught) {
     error.value = (caught as Error).message
-    messages.value = messages.value.filter((item) => !item.id.startsWith('pending-'))
+    if (received && sessionId.value === sentSessionId) {
+      // 说到一半断了:服务端已经把这半截留在对话里,重新拉一次把它显示出来
+      await loadSession(targetSessionId, { force: true, silent: true })
+    } else if (!received) {
+      // 一个字都没出来:这次请求没有留下任何消息,把刚插入的那条收回去
+      messages.value = messages.value.filter((item) => !item.id.startsWith('pending-'))
+    }
   } finally {
+    // 这一段流结束了:落库的消息已经接上,撤掉流式的内容
+    streamingReply.value = ''
+    streamingReasoning.value = ''
     sending.value = false
     runStatus.value = ''
   }
@@ -285,12 +330,33 @@ async function send() {
                   <div class="mb-1 text-[11px] text-muted">
                     智能体 · {{ formatDateTime(message.created_at) }}
                   </div>
+                  <ChatReasoning
+                    v-if="message.metadata?.reasoning"
+                    :text="message.metadata.reasoning ?? ''"
+                  />
                   <!-- eslint-disable-next-line vue/no-v-html -- AI 回复按 Markdown 渲染,markdown-it 已转义原始 HTML -->
                   <div class="lo-md text-sm" v-html="renderMarkdown(message.content)"></div>
+                  <div v-if="message.metadata?.interrupted" class="mt-1 text-[11px] text-muted">
+                    这段回复中断了,重发一次就好
+                  </div>
                 </div>
               </div>
             </template>
-            <div v-if="sending" class="flex items-center gap-2 text-sm text-muted">
+            <!-- 正在生成的这一段:推理过程在上,正文在下,落库之后由真实消息接上 -->
+            <div v-if="streamingReasoning || streamingReply" class="flex flex-col items-start">
+              <ChatReasoning
+                v-if="streamingReasoning"
+                v-model:open="reasoningOpen"
+                :text="streamingReasoning"
+                streaming
+              />
+              <template v-if="streamingReply">
+                <div class="mb-1 text-[11px] text-muted">智能体 · 正在回答</div>
+                <!-- eslint-disable-next-line vue/no-v-html -- AI 回复按 Markdown 渲染,markdown-it 已转义原始 HTML -->
+                <div class="lo-md text-sm" v-html="renderMarkdown(streamingReply)"></div>
+              </template>
+            </div>
+            <div v-if="sending && !streamingReply" class="flex items-center gap-2 text-sm text-muted">
               <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
               {{ runStatus || '智能体正在输入…' }}
             </div>

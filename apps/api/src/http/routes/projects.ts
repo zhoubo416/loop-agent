@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { getDb } from '../../db/client.js'
 import { ApiError } from '../errors.js'
 import { resolveUser } from '../auth.js'
+import { SseStream } from '../sse.js'
 import { requireProjectAccess } from '../../modules/access.js'
 import {
   addMember,
@@ -38,6 +39,7 @@ import { getTimeline } from '../../modules/timeline.js'
 import { submitObservation } from '../../runtime/trigger.js'
 import { withIdempotency } from '../../modules/idempotency.js'
 import { getEngine } from '../../agent/engine-factory.js'
+import { AgentEngineError } from '../../agent/engine.js'
 import { buildConversationInput } from '../../agent/context-builder.js'
 import { listChatRunInsights } from '../../modules/chat-insights.js'
 
@@ -68,6 +70,16 @@ const chatSchema = z.object({
 const sessionSchema = z.object({
   type: z.enum(['chat', 'meeting', 'schedule', 'event', 'api', 'system']).default('chat'),
 })
+
+/** 一次对话的完整结果:流式时随 done 事件发出,同时按幂等键缓存,重复提交直接回放 */
+interface ChatResult {
+  session_id: string
+  reply: string
+  /** 模型的推理过程,没有或与回复正文相同时为 null;只用于展示,不进入后续上下文 */
+  reasoning: string | null
+  observation_id: string
+  agent_run_id: string | null
+}
 
 const memberSchema = z.object({
   user_id: z.string().uuid(),
@@ -347,67 +359,139 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     return { items: await listChatRunInsights(getDb(), session.id) }
   })
 
-  app.post('/api/v1/projects/:projectId/chat', async (request) => {
+  app.post('/api/v1/projects/:projectId/chat', async (request, reply) => {
     const user = await resolveUser(request)
     const { projectId } = request.params as { projectId: string }
+    await requireProjectAccess(getDb(), projectId, user.id)
     const body = chatSchema.parse(request.body ?? {})
     const idempotencyKey =
       body.idempotency_key ?? (request.headers['idempotency-key'] as string | undefined)
 
-    const result = await withIdempotency(`chat:${projectId}`, idempotencyKey, async () => {
-      const db = getDb()
-      const session = body.session_id
-        ? await getSession(db, projectId, body.session_id)
-        : await createSession(db, projectId, 'chat', user.id)
+    const stream = new SseStream(reply)
+    // 已经吐出去的内容:中途失败时靠它判断要不要保留半截回复
+    let partial = ''
 
-      // 带资料讨论时先校验资料行动确实存在且属于本项目
-      if (body.document_id) {
-        const action = await getAction(db, projectId, body.document_id)
-        if (action.kind !== 'document') {
-          throw new ApiError('ACTION_KIND_MISMATCH', '这个行动不是资料,不能作为文档上下文')
-        }
-      }
+    try {
+      const result = await withIdempotency<ChatResult>(
+        `chat:${projectId}`,
+        idempotencyKey,
+        async () => {
+          const db = getDb()
+          const session = body.session_id
+            ? await getSession(db, projectId, body.session_id)
+            : await createSession(db, projectId, 'chat', user.id)
 
-      // 对话先行:AI 基于项目背景直接回答。失败时不落任何消息,让用户重发
-      const conversation = await buildConversationInput(
-        db,
-        projectId,
-        session.id,
-        body.content,
-        body.document_id,
+          // 带资料讨论时先校验资料行动确实存在且属于本项目
+          if (body.document_id) {
+            const action = await getAction(db, projectId, body.document_id)
+            if (action.kind !== 'document') {
+              throw new ApiError('ACTION_KIND_MISMATCH', '这个行动不是资料,不能作为文档上下文')
+            }
+          }
+
+          const conversation = await buildConversationInput(
+            db,
+            projectId,
+            session.id,
+            body.content,
+            body.document_id,
+          )
+          const engine = getEngine()
+
+          // 对话先行:AI 基于项目背景直接回答,生成一段就发给前端一段
+          let replyText: string
+          let reasoning = ''
+          try {
+            replyText = await engine.converse(conversation, {
+              onDelta: (text, kind) => {
+                // 真正有内容之后才切开 SSE:在这之前失败仍然返回普通 JSON 错误
+                if (!stream.isStarted) stream.send('session', { session_id: session.id })
+                if (kind === 'reasoning') {
+                  reasoning += text
+                  stream.send('reasoning', { text })
+                } else {
+                  partial += text
+                  stream.send('delta', { text })
+                }
+              },
+            })
+          } catch (error) {
+            // 说到一半才断:问题和这半截回复留在这段对话里,这一轮不触发思考,用户直接重发
+            if (partial) {
+              await addMessage(db, session.id, 'user', body.content, {
+                ...(body.document_id ? { document_id: body.document_id } : {}),
+              })
+              await addMessage(db, session.id, 'assistant', partial, {
+                engine: engine.name,
+                interrupted: true,
+                ...(reasoning ? { reasoning } : {}),
+              })
+            }
+            throw error
+          }
+
+          // 上游只给推理、正文为空的兜底情况:两者内容一样,不必再存一份
+          const storedReasoning = reasoning && reasoning !== replyText ? reasoning : null
+
+          await addMessage(db, session.id, 'user', body.content, {
+            ...(body.document_id ? { document_id: body.document_id } : {}),
+          })
+          await addMessage(db, session.id, 'assistant', replyText, {
+            engine: engine.name,
+            ...(storedReasoning ? { reasoning: storedReasoning } : {}),
+          })
+
+          // 回复完成后,把这段对话的全部内容作为一条 Observation 交给思考阶段
+          const history = await listMessages(db, session.id)
+          const conversationText = history
+            .filter((row) => row.role === 'user' || row.role === 'assistant')
+            // 被中断的半截回复只留给用户看,不进交给思考的问答记录
+            .filter((row) => row.metadata?.interrupted !== true)
+            .map((row) => `${row.role === 'user' ? '我' : '智能体'}:${row.content}`)
+            .join('\n')
+          const { observation, run } = await submitObservation({
+            projectId,
+            userId: user.id,
+            type: 'conversation',
+            content: conversationText,
+            source: 'chat',
+            sessionId: session.id,
+            metadata: { question: body.content, reply: replyText },
+          })
+
+          return {
+            session_id: session.id,
+            reply: replyText,
+            reasoning: storedReasoning,
+            observation_id: observation.id,
+            agent_run_id: run?.id ?? null,
+          }
+        },
       )
-      const engine = getEngine()
-      const reply = await engine.converse(conversation)
 
-      await addMessage(db, session.id, 'user', body.content, {
-        ...(body.document_id ? { document_id: body.document_id } : {}),
-      })
-      await addMessage(db, session.id, 'assistant', reply, { engine: engine.name })
-
-      // 回复完成后,把这段对话的全部内容作为一条 Observation 交给思考阶段
-      const history = await listMessages(db, session.id)
-      const conversationText = history
-        .filter((row) => row.role === 'user' || row.role === 'assistant')
-        .map((row) => `${row.role === 'user' ? '我' : '智能体'}:${row.content}`)
-        .join('\n')
-      const { observation, run } = await submitObservation({
-        projectId,
-        userId: user.id,
-        type: 'conversation',
-        content: conversationText,
-        source: 'chat',
-        sessionId: session.id,
-        metadata: { question: body.content, reply },
-      })
-
-      return {
-        session_id: session.id,
-        reply,
-        observation_id: observation.id,
-        agent_run_id: run?.id ?? null,
+      // 重复提交(直接回放上次结果)或者 Engine 没走流式:整段回复当作一个增量发出去
+      if (!stream.isStarted) {
+        stream.send('session', { session_id: result.value.session_id })
+        if (result.value.reasoning) stream.send('reasoning', { text: result.value.reasoning })
+        stream.send('delta', { text: result.value.reply })
       }
-    })
-
-    return { ...result.value, replayed: result.replayed }
+      stream.send('done', {
+        session_id: result.value.session_id,
+        observation_id: result.value.observation_id,
+        agent_run_id: result.value.agent_run_id,
+        replayed: result.replayed,
+      })
+      stream.end()
+      return reply
+    } catch (error) {
+      // 还没吐出任何内容:交给统一错误处理,前端拿到的是普通错误响应
+      if (!stream.isStarted) throw error
+      stream.send('error', {
+        code: error instanceof AgentEngineError ? error.code : 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : '对话中断',
+      })
+      stream.end()
+      return reply
+    }
   })
 }

@@ -488,16 +488,29 @@ POST /api/v1/projects/{project_id}/chat
 
 ### Response
 
-```json
-{
-  "session_id": "session-id",
-  "reply": "结合当前记录，还不能确定原因……",
-  "observation_id": "observation-id",
-  "agent_run_id": "run-id"
-}
+响应是 SSE 流（`text/event-stream`），请求体不变。事件按顺序：
+
+```text
+session     { "session_id": "session-id" }
+reasoning   { "text": "先看项目当前状态……" }
+delta       { "text": "结合当前记录" }
+delta       { "text": "，还不能确定原因……" }
+done        { "session_id": "…", "observation_id": "…", "agent_run_id": "…", "replayed": false }
 ```
 
-`reply` 是这次讨论的即时回复。回复完成后，服务端把这段会话的全部问答记录（“我：… / 智能体：…”逐条）提交为一条 `conversation` Observation 并创建思考 Run；思考坚持宁缺毋滥，没有新信息的讨论只产生判断，不产出事件、提案、行动或建议。对话调用失败时不落任何消息，用户直接重发即可。
+* `session` 是第一个事件，前端靠它确定这条消息落在哪一段会话；请求没带 `session_id` 时，会话在这时创建。
+* `reasoning` 是模型自己的推理过程（推理型模型才有，排在正文之前，可以有多条），前端单独展示在回答上方，不算回复正文。它随回复一起存进这条消息的 `metadata.reasoning`，刷新页面后还能展开查看；只用于展示，既不进入交给思考的问答记录，也不会回传给模型。
+* `delta` 是回复正文的一个片段，按顺序拼接就是完整回复。
+* `done` 表示回复结束，此时消息、Observation 和思考 Run 都已经落库。
+
+失败分两种情况：
+
+* 一个字都没输出就失败：服务端返回普通的 JSON 错误响应（错误格式沿用第 38 节，状态码沿用第 39 节），这次请求没有留下任何消息，用户直接重发即可。
+* 输出到一半才失败：流以 `error` 事件结束（`{"code": "…", "message": "…"}`）。已经输出的正文仍然留在会话里并标记为 `interrupted`（推理过程一并保存），这一轮不产生 Observation、不触发思考，用户重发即可；被中断的回复不进入之后交给思考的问答记录。
+
+重复提交（第 40 节的幂等键）不重新调用 Engine：回放上次的结果，`session` 之后按顺序发 `reasoning`（如果有）和一个内容是完整回复的 `delta`，`done.replayed` 为 `true`。
+
+回复完成后，服务端把这段会话的全部问答记录（“我：… / 智能体：…”逐条）提交为一条 `conversation` Observation 并创建思考 Run；思考坚持宁缺毋滥，没有新信息的讨论只产生判断，不产出事件、提案、行动或建议。
 
 从资料页进入对话时，请求携带可选的 `document_id`（资料行动 ID）：服务端校验它属于本项目且 `kind=document`，把该资料的文档文本（截断到 `DOCUMENT_CONTEXT_MAX_CHARS`）作为对话上下文一并交给 Engine，并把 `document_id` 记进这条 user 消息的 metadata。资料上下文只影响对话回复，不改变“对话产生 conversation Observation”的思考链路。
 
@@ -509,7 +522,7 @@ POST /api/v1/projects/{project_id}/chat
 GET /api/v1/projects/{project_id}/sessions/{session_id}/runs
 ```
 
-返回该会话最近几次思考 Run 及其产出：`judgment`、待确认 State 提案、新事件、`proposed` 状态的行动提议和 `pending` 状态的建议，供 Chat 页右侧面板展示并直接操作。
+返回该会话最近几次思考 Run 及其产出：`judgment`、State 提案、新事件、行动和建议，供 Chat 页右侧面板展示并直接操作。
 
 `GET /sessions` 的每项额外携带 `preview`（首条 user 消息内容，前端截断作会话标题）与 `message_count`，按创建时间倒序返回（最新在前）；`POST /chat` 不带 `session_id` 即创建新会话，支持一个 Project 下的多段对话。
 
@@ -1386,6 +1399,8 @@ recommendation.created
 
 MVP 可以先不实现 WebSocket，前端轮询即可。
 
+第 12 节的对话回复已经用 SSE 逐段下发，但它是一条请求自己的响应流，和这里的服务端主动推送不是一回事：Run 状态、State 更新这些事件目前仍然靠前端轮询。
+
 ---
 
 # 38. API 错误格式
@@ -1932,6 +1947,8 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-16：第 12 节 `POST /chat` 增加 `reasoning` 事件，模型的推理过程单独下发并随消息存进 `metadata.reasoning`，只用于展示。
+- 2026-10-16：第 12 节 `POST /chat` 的响应改为 SSE 流（`session` / `delta` / `done` / `error` 事件）；补充两种失败情形的约定（未输出内容时返回普通 JSON 错误，输出到一半失败时保留半截回复并标记中断），以及幂等键重复提交的回放方式。第 37 节补充说明对话的 SSE 响应与服务端主动推送的区别。
 - 2026-10-15：第 47 节的通知接口补充 `project_id` 范围参数，列表、未读数与 read-all 都可以只看一个 Project。
 - 2026-10-14：第 47 节补充资料文档接口（上传、URL 导入、文件下载、删除）与 `POST /organize` AI 整理接口；第 12 节 Chat 请求增加可选 `document_id`，支持把资料文本作为对话上下文。
 - 2026-10-13：第 12 节补充多会话支持：`GET /sessions` 携带 `preview` 与 `message_count` 并按创建时间倒序，`POST /chat` 不带 `session_id` 时创建新会话。

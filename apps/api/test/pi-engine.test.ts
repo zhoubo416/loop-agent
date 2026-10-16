@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { test } from 'node:test'
 import { createEngine } from '../src/agent/engine-factory.js'
 import { AgentEngineError } from '../src/agent/engine.js'
+import { PIAgentEngine } from '../src/agent/engines/pi-engine.js'
 import { parseAgentOutput, parseOrganizeOutput } from '../src/agent/output-validator.js'
 import { config } from '../src/config.js'
-import type { AgentInput } from '../src/agent/types.js'
+import type { AgentInput, ConversationInput } from '../src/agent/types.js'
 
 const enabled = process.env.LOOP_REAL_ENGINE_TEST === '1'
 
@@ -70,6 +73,136 @@ test(
     console.log('Engine 输出:', JSON.stringify(output, null, 2))
   },
 )
+
+const conversation: ConversationInput = {
+  project: { name: '流式测试项目', objective: '验证流式对话。' },
+  state: { openIssues: [] },
+  history: [],
+  question: '这次实验说明了什么?',
+}
+
+/** 起一个只服务这次测试的假上游,用来验证流式解析,不依赖真实 Agent 服务 */
+async function withUpstream(
+  handler: (request: http.IncomingMessage, response: http.ServerResponse) => void,
+  run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  const server = http.createServer(handler)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  try {
+    await run(`http://127.0.0.1:${port}`)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
+function engineFor(baseUrl: string): PIAgentEngine {
+  return new PIAgentEngine({
+    baseUrl,
+    apiKey: 'test-key',
+    model: 'test-model',
+    timeoutMs: 5_000,
+    maxRetries: 0,
+  })
+}
+
+test('对话流式:上游的 SSE 分片被拼成完整回复,推理过程单独标出来', async () => {
+  await withUpstream(
+    (_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write('data: {"choices":[{"delta":{"reasoning_content":"先看状态,"}}]}\n\n')
+      response.write('data: {"choices":[{"delta":{"reasoning_content":"再回答。"}}]}\n\n')
+      response.write('data: {"choices":[{"delta":{"content":"第一段"}}]}\n\n')
+      // 故意在事件中间断开,验证跨分片的拼装
+      response.write('data: {"choices":[{"delta":{"content":"第')
+      response.write('二段"}}]}\n\ndata: {"choices":[{"delta":{"content":"第三段"}}]}\n')
+      response.write('\n')
+      response.write('data: [DONE]\n\n')
+      response.end()
+    },
+    async (baseUrl) => {
+      const chunks: Array<{ text: string; kind: string }> = []
+      const reply = await engineFor(baseUrl).converse(conversation, {
+        onDelta: (text, kind) => chunks.push({ text, kind }),
+      })
+      assert.equal(reply, '第一段第二段第三段')
+      assert.deepEqual(chunks, [
+        { text: '先看状态,', kind: 'reasoning' },
+        { text: '再回答。', kind: 'reasoning' },
+        { text: '第一段', kind: 'content' },
+        { text: '第二段', kind: 'content' },
+        { text: '第三段', kind: 'content' },
+      ])
+    },
+  )
+})
+
+test('对话流式:上游只给推理、没有正文时,推理当回复返回', async () => {
+  await withUpstream(
+    (_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write('data: {"choices":[{"delta":{"reasoning_content":"只能说这么多"}}]}\n\n')
+      response.write('data: [DONE]\n\n')
+      response.end()
+    },
+    async (baseUrl) => {
+      const chunks: Array<{ text: string; kind: string }> = []
+      const reply = await engineFor(baseUrl).converse(conversation, {
+        onDelta: (text, kind) => chunks.push({ text, kind }),
+      })
+      assert.equal(reply, '只能说这么多')
+      assert.deepEqual(chunks, [{ text: '只能说这么多', kind: 'reasoning' }])
+    },
+  )
+})
+
+test('对话流式:上游忽略 stream、直接返回完整 JSON 时当作一个增量', async () => {
+  await withUpstream(
+    (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ choices: [{ message: { content: '不支持流式的回复' } }] }))
+    },
+    async (baseUrl) => {
+      const chunks: Array<{ text: string; kind: string }> = []
+      const reply = await engineFor(baseUrl).converse(conversation, {
+        onDelta: (text, kind) => chunks.push({ text, kind }),
+      })
+      assert.equal(reply, '不支持流式的回复')
+      assert.deepEqual(chunks, [{ text: '不支持流式的回复', kind: 'content' }])
+    },
+  )
+})
+
+test('对话流式:上游明确拒绝 stream 时退回非流式调用', async () => {
+  let calls = 0
+  await withUpstream(
+    (request, response) => {
+      calls += 1
+      let body = ''
+      request.on('data', (chunk) => {
+        body += String(chunk)
+      })
+      request.on('end', () => {
+        if (body.includes('"stream":true')) {
+          response.writeHead(400, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ error: { message: 'unsupported parameter: stream' } }))
+          return
+        }
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ choices: [{ message: { content: '退回之后的完整回复' } }] }))
+      })
+    },
+    async (baseUrl) => {
+      const chunks: Array<{ text: string; kind: string }> = []
+      const reply = await engineFor(baseUrl).converse(conversation, {
+        onDelta: (text, kind) => chunks.push({ text, kind }),
+      })
+      assert.equal(reply, '退回之后的完整回复')
+      assert.deepEqual(chunks, [{ text: '退回之后的完整回复', kind: 'content' }])
+      assert.equal(calls, 2)
+    },
+  )
+})
 
 test('parseOrganizeOutput 接受 snake_case 与 camelCase 的整理结果', () => {
   const output = parseOrganizeOutput({

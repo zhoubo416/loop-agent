@@ -56,6 +56,66 @@ async function runList(project: string, query = ''): Promise<any[]> {
   return result.json.items
 }
 
+interface ChatTurn {
+  status: number
+  session_id: string | null
+  /** 所有 delta 事件拼起来的完整回复 */
+  reply: string
+  /** 所有 reasoning 事件拼起来的推理过程 */
+  reasoning: string
+  observation_id: string | null
+  agent_run_id: string | null
+  error: { code: string; message: string } | null
+  /** 还没切开 SSE 就失败时的普通错误响应 */
+  json: any
+}
+
+/**
+ * 对话接口返回的是 SSE 流,这里把事件拼成一次调用的结果,
+ * 断言方式和它还是一段 JSON 时一样。
+ */
+async function sendChat(project: string, body: Record<string, unknown>): Promise<ChatTurn> {
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/v1/projects/${project}/chat`,
+    headers: { 'content-type': 'application/json', 'x-user-id': devUserId },
+    payload: JSON.stringify(body),
+  })
+  const events = parseSse(response.body)
+  const of = (name: string) => events.find((item) => item.name === name)?.data
+  const joined = (name: string) =>
+    events
+      .filter((item) => item.name === name)
+      .map((item) => item.data.text as string)
+      .join('')
+  return {
+    status: response.statusCode,
+    session_id: of('session')?.session_id ?? null,
+    reply: joined('delta'),
+    reasoning: joined('reasoning'),
+    observation_id: of('done')?.observation_id ?? null,
+    agent_run_id: of('done')?.agent_run_id ?? null,
+    error: of('error') ?? null,
+    json: response.body.trimStart().startsWith('{') ? JSON.parse(response.body) : null,
+  }
+}
+
+function parseSse(body: string): Array<{ name: string; data: any }> {
+  return body
+    .split(/\r?\n\r?\n/)
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk.length > 0)
+    .map((chunk) => {
+      const lines = chunk.split(/\r?\n/)
+      const name = /^event:\s*(.*)$/.exec(lines[0] ?? '')?.[1] ?? 'message'
+      const payload = lines
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice('data:'.length).trim())
+        .join('\n')
+      return { name, data: payload ? JSON.parse(payload) : null }
+    })
+}
+
 before(async () => {
   await runMigrations({ quiet: true })
   await app.ready()
@@ -103,13 +163,13 @@ test('可以创建 Project,并自动生成当前 State 与 owner 成员', async 
 })
 
 test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸门', async () => {
-  const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+  const turn = await sendChat(projectId, {
     content: '我们已经完成第一轮实验,结果基本符合预期,你怎么看?',
   })
-  assert.equal(chat.status, 200)
-  assert.match(chat.json.reply, /scripted 讨论回复/)
-  assert.ok(chat.json.agent_run_id)
-  sessionId = chat.json.session_id
+  assert.equal(turn.status, 200)
+  assert.match(turn.reply, /scripted 讨论回复/)
+  assert.ok(turn.agent_run_id)
+  sessionId = turn.session_id!
 
   // 对话流里只有问答,思考结果不混进消息
   const messages = await api(
@@ -120,7 +180,7 @@ test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸�
     messages.json.items.map((item: { role: string }) => item.role),
     ['user', 'assistant'],
   )
-  assert.equal(messages.json.items[1].content, chat.json.reply)
+  assert.equal(messages.json.items[1].content, turn.reply)
 
   // 思考由整段对话记录触发的 conversation Observation
   const observations = await api('GET', `/api/v1/projects/${projectId}/observations`)
@@ -130,7 +190,7 @@ test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸�
 
   await drainWorker()
 
-  const run = await api('GET', `/api/v1/projects/${projectId}/runs/${chat.json.agent_run_id}`)
+  const run = await api('GET', `/api/v1/projects/${projectId}/runs/${turn.agent_run_id}`)
   assert.equal(run.json.status, 'completed')
 
   // 右栏思考结果接口返回这次 Run 的判断和产出
@@ -169,15 +229,13 @@ test('Chat 先给讨论回复,再由"问题+回复"触发思考进入确认闸�
 })
 
 test('没有新信息的讨论只给判断,不产出任何项目变更', async () => {
-  const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
-    content: '你好呀,最近怎么样?',
-  })
-  assert.equal(chat.status, 200)
+  const turn = await sendChat(projectId, { content: '你好呀,最近怎么样?' })
+  assert.equal(turn.status, 200)
   await drainWorker()
 
   const insights = await api(
     'GET',
-    `/api/v1/projects/${projectId}/sessions/${chat.json.session_id}/runs`,
+    `/api/v1/projects/${projectId}/sessions/${turn.session_id}/runs`,
   )
   assert.equal(insights.json.items.length, 1)
   const insight = insights.json.items[0]
@@ -197,10 +255,10 @@ test('多个对话会话互相隔离,列表带预览与消息数', async () => {
   const firstId = sessionId
 
   // 不带 session_id 发消息,创建第二个会话
-  const second = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+  const second = await sendChat(projectId, {
     content: '新会话:第二轮实验的方案已经确定了。',
   })
-  const secondId = second.json.session_id
+  const secondId = second.session_id!
   assert.notEqual(secondId, firstId)
   await drainWorker()
 
@@ -733,9 +791,7 @@ test('Risk Engine 能识别长期无进展与连续失败', async () => {
 test('Agent 产出建议后生成通知,并可标记已读', async () => {
   const before = await api('GET', '/api/v1/notifications/unread-count')
 
-  await api('POST', `/api/v1/projects/${projectId}/chat`, {
-    content: '通知测试:这轮实验也完成了。',
-  })
+  await sendChat(projectId, { content: '通知测试:这轮实验也完成了。' })
   await drainWorker()
 
   const list = await api('GET', '/api/v1/notifications')
@@ -906,9 +962,7 @@ test('完成 Action 后能追溯到智能体的分析结论', async () => {
 })
 
 test('Action 详情带出来源(触发信息与智能体判断)', async () => {
-  await api('POST', `/api/v1/projects/${projectId}/chat`, {
-    content: '来源追踪:第三轮实验完成了。',
-  })
+  await sendChat(projectId, { content: '来源追踪:第三轮实验完成了。' })
   await drainWorker()
 
   const actions = await api('GET', `/api/v1/projects/${projectId}/actions?status=proposed`)
@@ -1097,16 +1151,16 @@ test('AI 整理基于文档文本生成草稿,空资料行动会被拒绝', asyn
 })
 
 test('带资料上下文的对话引用文档内容,消息记录资料来源', async () => {
-  const chat = await api('POST', `/api/v1/projects/${projectId}/chat`, {
+  const turn = await sendChat(projectId, {
     content: '这份资料说明了什么?',
     document_id: documentActionId,
   })
-  assert.equal(chat.status, 200)
-  assert.match(chat.json.reply, /sample\.txt/)
+  assert.equal(turn.status, 200)
+  assert.match(turn.reply, /sample\.txt/)
 
   const messages = await api(
     'GET',
-    `/api/v1/projects/${projectId}/sessions/${chat.json.session_id}/messages`,
+    `/api/v1/projects/${projectId}/sessions/${turn.session_id}/messages`,
   )
   assert.equal(messages.json.items[0].metadata.document_id, documentActionId)
 })
@@ -1145,4 +1199,114 @@ test('行动结束后不能再修改文档,非成员没有上传权限', async (
     secondUserId,
   )
   assert.equal(outsiderUpload.status, 403)
+})
+
+// ---------- 对话的流式返回 ----------
+
+test('对话按 SSE 返回:先是会话,再是增量,最后是收尾', async () => {
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/v1/projects/${projectId}/chat`,
+    headers: { 'content-type': 'application/json', 'x-user-id': devUserId },
+    payload: JSON.stringify({ content: '流式对话:第四轮实验已经完成。' }),
+  })
+
+  assert.equal(response.statusCode, 200)
+  assert.match(String(response.headers['content-type']), /text\/event-stream/)
+
+  const events = parseSse(response.body)
+  const names = events.map((item) => item.name)
+  assert.equal(names[0], 'session', '会话必须最先下发,前端靠它确定消息落在哪一段对话')
+  assert.equal(names.at(-1), 'done')
+  assert.deepEqual(
+    names.filter((name) => name !== 'delta'),
+    ['session', 'reasoning', 'done'],
+    '推理过程只发一次,排在正文之前',
+  )
+  const firstDelta = names.indexOf('delta')
+  assert.ok(
+    names.indexOf('reasoning') < firstDelta,
+    '推理过程要先于正文到达,前端才能把它显示在回答上方',
+  )
+  const deltas = events.filter((item) => item.name === 'delta')
+  assert.ok(deltas.length > 1, `回复应该分多段下发,实际只有 ${deltas.length} 段`)
+
+  const reasoning = events
+    .filter((item) => item.name === 'reasoning')
+    .map((item) => item.data.text as string)
+    .join('')
+  assert.match(reasoning, /scripted 推理/)
+
+  const streamedSessionId = events[0]!.data.session_id
+  const done = events.at(-1)!.data
+  assert.equal(done.session_id, streamedSessionId)
+  assert.ok(done.observation_id)
+  assert.ok(done.agent_run_id)
+  assert.equal(done.replayed, false)
+
+  // 增量拼起来就是落库的完整回复,推理过程单独存在 metadata 里
+  const reply = deltas.map((item) => item.data.text as string).join('')
+  const messages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${streamedSessionId}/messages`,
+  )
+  assert.deepEqual(
+    messages.json.items.map((item: { role: string }) => item.role),
+    ['user', 'assistant'],
+  )
+  assert.equal(messages.json.items[1].content, reply)
+  assert.equal(messages.json.items[1].metadata.reasoning, reasoning)
+
+  // 推理过程只用于展示:不进入交给思考的问答记录
+  const observation = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/observations/${done.observation_id}`,
+  )
+  assert.doesNotMatch(observation.json.content, /scripted 推理/)
+})
+
+test('对话说到一半失败:保留半截回复,但不触发思考', async () => {
+  const before = await runList(projectId)
+  const question = '模拟中断:第五轮实验的情况如何?'
+  const turn = await sendChat(projectId, { content: question })
+
+  assert.equal(turn.status, 200)
+  assert.ok(turn.error, '流里应该有终止对话的 error 事件')
+  assert.equal(turn.error!.code, 'ENGINE_UNAVAILABLE')
+  assert.equal(turn.reply, '(scripted 半截回复)先说结论:')
+  assert.equal(turn.reasoning, '(scripted 推理)先看项目状态,')
+  assert.equal(turn.agent_run_id, null)
+
+  // 问题和半截回复都留在对话里,回复标记为中断,已经发出的推理过程一起保存
+  const messages = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/sessions/${turn.session_id}/messages`,
+  )
+  assert.deepEqual(
+    messages.json.items.map((item: { role: string }) => item.role),
+    ['user', 'assistant'],
+  )
+  assert.equal(messages.json.items[0].content, question)
+  assert.equal(messages.json.items[1].content, turn.reply)
+  assert.equal(messages.json.items[1].metadata.interrupted, true)
+  assert.equal(messages.json.items[1].metadata.reasoning, turn.reasoning)
+
+  // 这一轮不产生 Observation,也就没有新的思考
+  assert.equal((await runList(projectId)).length, before.length)
+
+  // 用户重发:中断的半截回复不进入交给思考的问答记录
+  const retry = await sendChat(projectId, {
+    content: '重新问:第五轮实验结果已经拿到了。',
+    session_id: turn.session_id,
+  })
+  assert.equal(retry.error, null)
+  assert.ok(retry.agent_run_id)
+  await drainWorker()
+
+  const observation = await api(
+    'GET',
+    `/api/v1/projects/${projectId}/observations/${retry.observation_id}`,
+  )
+  assert.match(observation.json.content, /模拟中断/)
+  assert.doesNotMatch(observation.json.content, /scripted 半截回复/)
 })

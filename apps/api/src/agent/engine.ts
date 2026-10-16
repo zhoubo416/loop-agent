@@ -44,6 +44,21 @@ export interface AgentToolContext {
   execute(name: string, args: Record<string, unknown>): Promise<unknown>
 }
 
+/** 对话流里的一段:模型给出的正文,或者它自己的推理过程 */
+export type ConverseDeltaKind = 'content' | 'reasoning'
+
+/**
+ * 对话的流式选项。
+ *
+ * 传了 onDelta 就是流式:Engine 每产出一段文本就回调一次,返回值仍然是完整回复;
+ * 不传则等整段生成完再返回。推理过程通过 kind 区分,调用方可以只展示正文。
+ * 回调只会在真正有内容之后发生,失败发生在第一个增量之前时不会有任何回调,
+ * 调用方据此判断"能不能当作这次请求没发生"。
+ */
+export interface ConverseOptions {
+  onDelta?: (text: string, kind: ConverseDeltaKind) => void
+}
+
 /**
  * Agent Engine 接口。Runtime 只认识这一个方法。
  * 对应 docs/design/07-agent-engine-adapter.md 第 4 节。
@@ -51,8 +66,8 @@ export interface AgentToolContext {
 export interface AgentEngine {
   readonly name: string
   run(input: AgentInput, tools?: AgentToolContext): Promise<AgentOutput>
-  /** 对话模式:基于项目背景回答用户的问题,返回纯文本回复 */
-  converse(input: ConversationInput): Promise<string>
+  /** 对话模式:基于项目背景回答用户的问题,返回纯文本回复;传 onDelta 时边生成边回调 */
+  converse(input: ConversationInput, options?: ConverseOptions): Promise<string>
   /** 整理模式:把资料文档文本整理成结构化草稿,不落库,由用户修订后提交 */
   organize(input: OrganizeInput): Promise<OrganizeOutput>
   healthCheck(): Promise<{ ok: boolean; detail?: string }>

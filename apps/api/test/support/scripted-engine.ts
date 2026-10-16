@@ -1,4 +1,4 @@
-import type { AgentEngine } from '../../src/agent/engine.js'
+import { AgentEngineError, type AgentEngine, type ConverseOptions } from '../../src/agent/engine.js'
 import type {
   AgentInput,
   AgentOutput,
@@ -30,12 +30,23 @@ function contains(text: string, keywords: string[]): boolean {
 export class ScriptedEngine implements AgentEngine {
   readonly name = 'scripted-test-double'
 
-  async converse(input: ConversationInput): Promise<string> {
-    if (input.documents?.length) {
-      const names = input.documents.map((doc) => `《${doc.name}》`).join('')
-      return `(scripted 讨论回复)关于「${input.question}」,结合资料${names}和当前项目状态,建议先核对已有记录再判断。`
+  async converse(input: ConversationInput, options: ConverseOptions = {}): Promise<string> {
+    // 测试中断链路:吐出一段之后失败,验证半截回复被保留并标记中断
+    if (input.question.includes('模拟中断')) {
+      options.onDelta?.('(scripted 推理)先看项目状态,', 'reasoning')
+      options.onDelta?.('(scripted 半截回复)先说结论:', 'content')
+      throw new AgentEngineError('ENGINE_UNAVAILABLE', 'scripted 引擎中断', { retryable: false })
     }
-    return `(scripted 讨论回复)关于「${input.question}」,结合当前项目状态,建议先核对已有记录再判断。`
+
+    const names = input.documents?.map((doc) => `《${doc.name}》`).join('') ?? ''
+    const reply = input.documents?.length
+      ? `(scripted 讨论回复)关于「${input.question}」,结合资料${names}和当前项目状态,建议先核对已有记录再判断。`
+      : `(scripted 讨论回复)关于「${input.question}」,结合当前项目状态,建议先核对已有记录再判断。`
+
+    // 推理过程先于正文下发,覆盖展示与落库;正文再分段回调,覆盖增量拼装
+    options.onDelta?.('(scripted 推理)先核对项目状态,再回答。', 'reasoning')
+    for (const piece of reply.match(/.{1,12}/gu) ?? [reply]) options.onDelta?.(piece, 'content')
+    return reply
   }
 
   async organize(input: OrganizeInput): Promise<OrganizeOutput> {
