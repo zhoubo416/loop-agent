@@ -31,7 +31,16 @@ const [{ data, refresh, pending }, { data: users }] = await Promise.all([
   useAsyncData('users', () => api.get<{ items: UserItem[] }>('/users')),
 ])
 
-const filterOptions = [
+const kindOptions = [
+  { label: '任务', value: 'task' },
+  { label: '会议', value: 'meeting' },
+  { label: '资料', value: 'document' },
+]
+
+const kindFilterOptions = [...kindOptions, { label: '全部', value: 'all' }]
+const kindFilter = ref('all')
+
+const statusFilterOptions = [
   { label: '进行中', value: 'open' },
   { label: '待确认', value: 'proposed' },
   { label: '待处理', value: 'pending' },
@@ -45,11 +54,14 @@ const statusFilter = ref('open')
 
 const filtered = computed(() => {
   const items = data.value?.items ?? []
-  if (statusFilter.value === 'all') return items
+  const byKind = kindFilter.value === 'all'
+    ? items
+    : items.filter((item) => item.kind === kindFilter.value)
+  if (statusFilter.value === 'all') return byKind
   if (statusFilter.value === 'open') {
-    return items.filter((item) => ['pending', 'running'].includes(item.status))
+    return byKind.filter((item) => ['pending', 'running'].includes(item.status))
   }
-  return items.filter((item) => item.status === statusFilter.value)
+  return byKind.filter((item) => item.status === statusFilter.value)
 })
 
 const error = ref('')
@@ -61,12 +73,6 @@ const pendingId = ref<string | null>(null)
 const userOptions = computed(() =>
   (users.value?.items ?? []).map((user) => ({ label: user.name, value: user.id })),
 )
-
-const kindOptions = [
-  { label: '任务', value: 'task' },
-  { label: '会议', value: 'meeting' },
-  { label: '资料', value: 'document' },
-]
 
 const priorityOptions = [
   { label: '低', value: 'low' },
@@ -166,17 +172,31 @@ async function create() {
 
     <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
 
-    <div class="mb-3 flex flex-wrap gap-2">
-      <UButton
-        v-for="option in filterOptions"
-        :key="option.value"
-        size="xs"
-        :variant="statusFilter === option.value ? 'solid' : 'outline'"
-        :color="statusFilter === option.value ? 'primary' : 'neutral'"
-        @click="statusFilter = option.value"
-      >
-        {{ option.label }}
-      </UButton>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div class="flex flex-wrap gap-2">
+        <UButton
+          v-for="option in kindFilterOptions"
+          :key="option.value"
+          size="xs"
+          :variant="kindFilter === option.value ? 'solid' : 'outline'"
+          :color="kindFilter === option.value ? 'primary' : 'neutral'"
+          @click="kindFilter = option.value"
+        >
+          {{ option.label }}
+        </UButton>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <UButton
+          v-for="option in statusFilterOptions"
+          :key="option.value"
+          size="xs"
+          :variant="statusFilter === option.value ? 'solid' : 'outline'"
+          :color="statusFilter === option.value ? 'primary' : 'neutral'"
+          @click="statusFilter = option.value"
+        >
+          {{ option.label }}
+        </UButton>
+      </div>
     </div>
 
     <div v-if="pending && !data" class="flex flex-col gap-3">
