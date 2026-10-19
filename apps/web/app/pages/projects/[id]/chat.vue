@@ -144,6 +144,8 @@ function openNotifications() {
 }
 
 function handleEnter(event: KeyboardEvent) {
+  // 只处理回车,删除、退格、方向键这些一律放行
+  if (event.key !== 'Enter') return
   // 输入法选词时,回车用于确认候选词,不能当成发送
   if (event.isComposing || event.keyCode === 229) return
   if (event.shiftKey) return
