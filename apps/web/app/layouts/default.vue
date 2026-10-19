@@ -121,7 +121,7 @@ function logout() {
 
       <UNavigationMenu :items="navItems" orientation="vertical" />
 
-      <!-- 对话:通知置顶,下面是这个项目的会话列表 -->
+      <!-- 对话:通知排在列表最前面,和会话一起滚动 -->
       <div v-if="currentProjectId" class="lo-sidebar-chat">
         <div class="flex shrink-0 items-center justify-between gap-2">
           <NuxtLink :to="chatHref" class="text-xs text-muted transition-colors hover:text-default">
@@ -138,23 +138,23 @@ function logout() {
           />
         </div>
 
-        <!-- 通知是会话列表里的一条特殊会话:它不属于某一段讨论,但和会话一样点开就进内容 -->
-        <NuxtLink
-          :to="notificationsHref"
-          class="shrink-0 rounded-lg px-2.5 py-2 text-sm transition-colors"
-          :class="onNotifications ? 'bg-primary/10 font-medium' : 'hover:bg-elevated/60'"
-        >
-          <span class="flex items-center gap-2">
-            <UIcon name="i-lucide-bell" class="size-4 shrink-0 text-muted" />
-            <span class="min-w-0 flex-1 truncate">通知</span>
-          </span>
-          <span class="mt-0.5 block pl-6 text-[11px] text-muted">
-            <USkeleton v-if="notificationsPending && !unreadCount" class="h-3 w-16 rounded-full" />
-            <template v-else>{{ unreadCount ? `${unreadCount} 条未读` : '暂无未读' }}</template>
-          </span>
-        </NuxtLink>
-
         <div class="lo-sidebar-sessions">
+          <!-- 通知是会话列表里的一条特殊会话:它不属于某一段讨论,但和会话一样点开就进内容 -->
+          <NuxtLink
+            :to="notificationsHref"
+            class="rounded-lg px-2.5 py-2 text-sm transition-colors"
+            :class="onNotifications ? 'bg-primary/10 font-medium' : 'hover:bg-elevated/60'"
+          >
+            <span class="flex items-center gap-2">
+              <UIcon name="i-lucide-bell" class="size-4 shrink-0 text-muted" />
+              <span class="min-w-0 flex-1 truncate">通知</span>
+            </span>
+            <span class="mt-0.5 block pl-6 text-[11px] text-muted">
+              <USkeleton v-if="notificationsPending && !unreadCount" class="h-3 w-16 rounded-full" />
+              <template v-else>{{ unreadCount ? `${unreadCount} 条未读` : '暂无未读' }}</template>
+            </span>
+          </NuxtLink>
+
           <template v-if="sessionsPending && !sessions.length">
             <USkeleton v-for="n in 3" :key="n" class="h-12 shrink-0 rounded-lg" />
           </template>
