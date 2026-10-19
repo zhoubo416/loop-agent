@@ -12,6 +12,24 @@ function int(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+/**
+ * 腾讯会议 MCP 的旧配置里只写了根地址,根地址已经失效。
+ * 这里统一补上真实端点,避免本地 .env 里的旧值把请求发到 404。
+ */
+function tencentMeetingMcpUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) return 'https://mcp.meeting.tencent.com/mcp/wemeet-open/v1'
+  try {
+    const url = new URL(trimmed)
+    if (!url.pathname || url.pathname === '/') {
+      url.pathname = '/mcp/wemeet-open/v1'
+    }
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return trimmed
+  }
+}
+
 export const config = {
   port: int(process.env.PORT, 4000),
   host: process.env.HOST ?? '127.0.0.1',
@@ -36,6 +54,13 @@ export const config = {
   agentEngineModel: process.env.AGENT_ENGINE_MODEL ?? 'gpt-4o-mini',
   agentEngineTimeoutMs: int(process.env.AGENT_ENGINE_TIMEOUT_MS, 120_000),
   agentEngineMaxRetries: int(process.env.AGENT_ENGINE_MAX_RETRIES, 2),
+
+  tencentMeetingMcpUrl: tencentMeetingMcpUrl(
+    process.env.TENCENT_MEETING_MCP_URL ?? 'https://mcp.meeting.tencent.com/mcp/wemeet-open/v1',
+  ),
+  tencentMeetingSkillVersion: process.env.TENCENT_MEETING_SKILL_VERSION ?? '1.0.15',
+  tencentMeetingTokenEncryptionKey: process.env.TENCENT_MEETING_TOKEN_ENCRYPTION_KEY ?? '',
+  tencentMeetingTimeoutMs: int(process.env.TENCENT_MEETING_TIMEOUT_MS, 60_000),
 
   workerEnabled: bool(process.env.WORKER_ENABLED, true),
   workerIntervalMs: int(process.env.WORKER_INTERVAL_MS, 1_000),

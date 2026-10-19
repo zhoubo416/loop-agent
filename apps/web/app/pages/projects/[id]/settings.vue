@@ -180,7 +180,7 @@ function archive() {
     <div class="mb-6 flex items-start justify-between gap-4">
       <div>
         <h1 class="text-2xl font-semibold">设置</h1>
-        <p class="text-muted">项目身份、成员、定时任务与生命周期。</p>
+        <p class="text-muted">项目身份、成员、个人集成、定时任务与生命周期。</p>
       </div>
       <UBadge v-if="project" :color="statusColor(project.status)" variant="soft">
         {{ statusLabel(project.status) }}
@@ -313,6 +313,13 @@ function archive() {
         />
         <UButton :disabled="busy" @click="createSchedule">新增</UButton>
       </div>
+    </UCard>
+
+    <UCard class="mb-4">
+      <template #header>
+        <span class="font-medium">腾讯会议（当前账号）</span>
+      </template>
+      <TencentMeetingBinding />
     </UCard>
 
     <UCard>

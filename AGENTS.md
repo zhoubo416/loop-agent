@@ -68,6 +68,7 @@ Memory 记录项目开发过程中积累的经验和习惯,也是项目 Memory �
 - **前端 UI 设计** (`docs/design/05-frontend-ui-design.md`) — 前端页面结构、布局和交互设计;开发或调整前端页面前阅读。
 - **MVP 开发计划** (`docs/design/06-mvp-plan.md`) — MVP 的目标、范围、技术优先级、开发阶段和验收标准;规划或推进 MVP 开发时阅读。
 - **Agent Engine Adapter 设计** (`docs/design/07-agent-engine-adapter.md`) — Agent Engine Adapter 的职责、接口和 PI Agent 接入方式;接入、替换或调整 Agent Engine 前阅读。
+- **腾讯会议集成设计** (`docs/design/08-tencent-meeting-integration.md`) — 腾讯会议 MCP 的端点、个人 Token 绑定、会议内容导入流程和限制;开发或调整会议导入前阅读。
 
 ## 文档体系维护
 

@@ -2064,7 +2064,52 @@ failed      解析过程出错（parse_error 记录原因）
 
 ---
 
-# 42. 最终原则
+# 42. 腾讯会议集成
+
+## 42.1 `user_integrations`
+
+保存用户级第三方服务凭证。当前仅支持 `provider=tencent_meeting`。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| user_id | uuid | NO | - | 用户 |
+| provider | varchar(50) | NO | - | 集成提供方 |
+| encrypted_token | text | NO | - | AES-256-GCM 密文，不返回前端 |
+| token_hint | varchar(8) | YES | - | Token 末 4 位掩码 |
+| created_at | timestamptz | NO | now() | 创建时间 |
+| updated_at | timestamptz | NO | now() | 更新时间 |
+
+同一个用户和提供方只能有一条凭证。加密密钥只从服务端环境变量读取，不能写入数据库、日志或前端响应。
+
+## 42.2 `action_meeting_imports`
+
+保存会议 Action 最近一次从腾讯会议导入的原始内容。它和 `executions` 分工不同：本表保存可反复查看的原始会议资料，Execution 只保存用户确认完成时提交给 Agent 的结构化结果。
+
+| 字段 | 类型 | NULL | 默认值 | 说明 |
+|---|---|---:|---|---|
+| id | uuid | NO | gen_random_uuid() | PK |
+| action_id | uuid | NO | - | 唯一关联一个 meeting Action |
+| meeting_id | varchar(64) | YES | - | 腾讯会议内部 ID |
+| meeting_code | varchar(20) | YES | - | 会议号 |
+| sub_meeting_id | varchar(64) | YES | - | 周期会议实例 |
+| meeting_title | varchar(300) | YES | - | 会议标题 |
+| started_at / ended_at | timestamptz | YES | - | 会议开始和结束时间 |
+| participants | jsonb | NO | `[]` | 实际参会人名称列表 |
+| summary | text | YES | - | 会议结论，取自纪要的会议摘要 |
+| minutes | text | YES | - | 纪要正文 |
+| todos | jsonb | NO | `[]` | 纪要中的待办 |
+| transcript | text | YES | - | 完整逐字稿，仅快照保存 |
+| transcript_segments | jsonb | NO | `[]` | 带发言人和相对时间的逐字稿段落 |
+| content_source | varchar(20) | NO | 'minutes' | minutes / smart_minutes |
+| imported_by | uuid | YES | - | 导入用户 |
+| imported_at | timestamptz | NO | now() | 最近导入时间 |
+
+`action_id` 唯一约束保证重复导入只更新当前快照，不产生重复记录。决定和后续行动不再单独作为会议表单字段，内容保留在纪要正文里；`todos` 仍作为原始数据保存。逐字稿只保存在本表，不进入 Observation。
+
+---
+
+# 43. 最终原则
 
 LOOP 数据库设计遵循一句话：
 
@@ -2109,6 +2154,8 @@ Schedule
 
 ## 修改历史
 
+- 2026-10-19：第 42 节 `action_meeting_imports` 增加 `summary`（会议结论）；会议表单不再单独提交决定和后续行动，内容留在纪要正文里，`todos` 仍作为原始数据保留。
+- 2026-10-18：新增第 42 节腾讯会议集成，重新引入 `user_integrations` 与 `action_meeting_imports` 两张表；个人 Token 加密保存，会议导入快照与 Execution 分工，逐字稿不进入 Observation。
 - 2026-10-16：第 11 节补上 `session_messages.seq` 字段与 `UNIQUE(session_id, seq)` 约束（0012），说明它为什么必须唯一。
 - 2026-10-14：新增第 41 节 `action_documents` 表，资料行动支持上传文件与 URL 导入，服务端提取文本入库，供资料对话与 AI 整理使用；上传和删除只在行动未结束时开放。
 - 2026-10-12：`observations.type` 增加 `conversation`（0009），Chat 对话讨论的“问题 + 回复”作为一条观察触发思考。

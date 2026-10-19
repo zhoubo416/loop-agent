@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { MeetingImportSnapshot } from '~/utils/tencentMeeting'
+
 interface ExecutionItem {
   id: string
   status: string
@@ -21,6 +23,7 @@ interface ActionDetail {
   due_at: string | null
   created_at: string
   completed_at: string | null
+  meeting_import: MeetingImportSnapshot | null
   executions: ExecutionItem[]
   analysis: Array<{
     id: string
@@ -62,16 +65,30 @@ const { busy, error, notice, complete, fail, cancel } = useActionLifecycle(
 const summary = ref('')
 const participants = ref('')
 const notes = ref('')
-const decisions = ref('')
-const actionItems = ref('')
+const importOpen = ref(false)
+const importNotice = ref('')
 
 const editable = computed(() => ['pending', 'running'].includes(action.value?.status ?? ''))
+const meetingImport = computed(() => action.value?.meeting_import ?? null)
 
-function lines(value: string): string[] {
-  return value
-    .split('\n')
-    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
-    .filter(Boolean)
+function fillForm(snapshot: MeetingImportSnapshot) {
+  const nextSummary = snapshot.summary?.trim()
+  if (nextSummary) summary.value = nextSummary
+  const nextParticipants = snapshot.participants.join('、').trim()
+  if (nextParticipants) participants.value = nextParticipants
+  if (snapshot.minutes?.trim()) notes.value = snapshot.minutes
+}
+
+function applyImport(snapshot: MeetingImportSnapshot) {
+  fillForm(snapshot)
+  importNotice.value = `已导入「${snapshot.meeting_title ?? '腾讯会议'}」的内容,请检查后完成。`
+  void refresh()
+}
+
+function applyStoredSnapshot() {
+  if (!meetingImport.value) return
+  fillForm(meetingImport.value)
+  importNotice.value = '已用导入的会议内容填充表单,请检查后完成。'
 }
 
 function submit() {
@@ -79,8 +96,6 @@ function submit() {
     {
       participants: participants.value.split(/[,，、]/).map((item) => item.trim()).filter(Boolean),
       notes: notes.value,
-      decisions: lines(decisions.value),
-      action_items: lines(actionItems.value),
     },
     summary.value || '会议已完成',
   )
@@ -129,10 +144,36 @@ function failWithReason() {
         <ActionSource :source="action.source" />
         <UCard class="lg:col-span-2">
           <template #header>
-            <span class="font-medium">会议记录</span>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-medium">会议记录</span>
+              <UButton
+                v-if="editable"
+                icon="i-lucide-download"
+                size="xs"
+                color="secondary"
+                variant="outline"
+                @click="importOpen = true"
+              >
+                从腾讯会议导入
+              </UButton>
+            </div>
           </template>
 
           <div v-if="editable" class="flex flex-col gap-4">
+            <UAlert v-if="importNotice" color="info" variant="soft" :title="importNotice" />
+            <div v-if="meetingImport" class="flex flex-col gap-2">
+              <MeetingImportSnapshotView :snapshot="meetingImport" compact />
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="outline"
+                class="w-fit"
+                @click="applyStoredSnapshot"
+              >
+                用这份内容填充表单
+              </UButton>
+            </div>
+
             <UFormField label="结论">
               <UTextarea v-model="summary" :rows="2" class="w-full" placeholder="一句话概括会议结论" />
             </UFormField>
@@ -142,14 +183,6 @@ function failWithReason() {
             <UFormField label="纪要">
               <UTextarea v-model="notes" :rows="4" class="w-full" />
             </UFormField>
-            <div class="grid gap-3 sm:grid-cols-2">
-              <UFormField label="决定" help="每行一条">
-                <UTextarea v-model="decisions" :rows="3" class="w-full" />
-              </UFormField>
-              <UFormField label="后续行动" help="每行一条">
-                <UTextarea v-model="actionItems" :rows="3" class="w-full" />
-              </UFormField>
-            </div>
             <div class="flex flex-wrap gap-2">
               <UButton :loading="busy" @click="submit">完成并交给智能体</UButton>
               <UButton color="warning" variant="outline" :disabled="busy" @click="failWithReason">失败</UButton>
@@ -157,11 +190,23 @@ function failWithReason() {
             </div>
           </div>
           <p v-else class="text-sm text-muted">这个会议已经结束，记录见右侧执行历史。</p>
+          <MeetingImportSnapshotView
+            v-if="!editable && meetingImport"
+            :snapshot="meetingImport"
+            class="mt-3"
+          />
         </UCard>
 
         <ExecutionList :executions="action.executions" />
         <ActionAnalysis :analysis="action.analysis" />
       </div>
+
+      <MeetingImportModal
+        v-model:open="importOpen"
+        :project-id="projectId"
+        :action-id="actionId"
+        @imported="applyImport"
+      />
     </template>
   </UContainer>
 </template>

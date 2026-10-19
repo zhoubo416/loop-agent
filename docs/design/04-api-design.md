@@ -1448,6 +1448,12 @@ SCHEDULE_INVALID
 STATE_CONFLICT
 INVALID_AGENT_OUTPUT
 
+INTEGRATION_NOT_CONFIGURED
+INTEGRATION_AUTH_FAILED
+INTEGRATION_UNAVAILABLE
+MEETING_NOT_FOUND
+MEETING_CONTENT_NOT_FOUND
+
 IDEMPOTENCY_CONFLICT
 VALIDATION_ERROR
 INTERNAL_ERROR
@@ -1873,6 +1879,26 @@ POST   /api/v1/projects/{project_id}/actions/{action_id}/organize
 - 上传、导入和删除只在行动处于 `pending` / `running` 时开放；完成后文档定稿，仍然可见可预览，但不再允许增删。
 - `POST /organize` 是 AI 整理：把资料的文档文本交给 Engine，返回 `{ summary, key_points, content }` 草稿。草稿不落库、不触发 Agent Run，由用户在详情页修订后随 `complete` 一起提交；没有可解析文本的资料行动返回 422。
 
+腾讯会议集成接口：
+
+```text
+GET    /api/v1/me/integrations/tencent-meeting
+PUT    /api/v1/me/integrations/tencent-meeting          { token }
+DELETE /api/v1/me/integrations/tencent-meeting
+GET    /api/v1/me/integrations/tencent-meeting/meetings?from=&to=&page_token=
+POST   /api/v1/projects/{project_id}/actions/{action_id}/meeting-import
+       { meeting_id?, meeting_code?, sub_meeting_id?, started_at?, ended_at? }
+```
+
+- 个人 Token 按用户保存，使用 AES-256-GCM 加密；`GET` 只返回 `{ configured, masked_token, updated_at }`，不返回原文。
+- `PUT` 先调用腾讯会议 MCP 的已结束会议列表验证 Token，验证失败不落库。
+- `DELETE` 解除当前用户的绑定，已经导入的会议快照保留。
+- `GET meetings` 默认返回近 7 天已结束的会议，`from` / `to` 跨度最多 31 天；响应带 `has_more` 和 `next_page_token`。
+- `POST /meeting-import` 只允许 `kind=meeting` 且状态为 `pending` / `running` 的 Action；`started_at` / `ended_at` 传列表里选中那一场会议的时间，周期会议靠它定位到具体实例。服务端通过腾讯会议 MCP 读取纪要、参会人和逐字稿，保存 `action_meeting_imports` 快照并返回 `{ meeting_import }`。
+- Action 详情响应增加 `meeting_import`，没有导入过时为 `null`。快照包含 `summary`（会议结论）、`participants`、`minutes`、`todos`、`transcript` 等字段；完整逐字稿只保存在快照中，不写入 Agent Observation。
+- 完成 Action 时，提交的参与人、纪要、决定和后续行动会进入 Observation，逐字稿不会。当前会议详情页只提交参与人和纪要，决定与待办的内容直接写在纪要里。
+- 腾讯会议 MCP 的端点、鉴权、工具和限制见 `docs/design/08-tencent-meeting-integration.md`。
+
 登录与注册：
 
 ```text
@@ -1949,6 +1975,9 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-19：第 47 节会议导入快照增加 `summary`（会议结论）；会议详情页只提交参与人和纪要，决定与后续行动不再单独提交，内容随纪要进入 Observation。
+- 2026-10-18：第 47 节 `meeting-import` 请求体补充可选 `started_at` / `ended_at`，周期会议用它定位到选中的那一场实例。
+- 2026-10-18：第 47 节新增腾讯会议集成接口：个人 Token 绑定/解绑/状态、已结束会议列表、会议内容导入；Action 详情响应增加 `meeting_import`，逐字稿只存快照不进入 Observation。第 38 节补充 `INTEGRATION_*` 与 `MEETING_*` 错误码。
 - 2026-10-16：第 12 节的会话思考结果改为返回本轮全部产出（不再只取待处理状态），每条带 `status`，处理过的保留在原位显示结果；行动数组由 `proposed_actions` 改名为 `actions`。
 - 2026-10-16：第 12 节 `POST /chat` 增加 `reasoning` 事件，模型的推理过程单独下发并随消息存进 `metadata.reasoning`，只用于展示。
 - 2026-10-16：第 12 节 `POST /chat` 的响应改为 SSE 流（`session` / `delta` / `done` / `error` 事件）；补充两种失败情形的约定（未输出内容时返回普通 JSON 错误，输出到一半失败时保留半截回复并标记中断），以及幂等键重复提交的回放方式。第 37 节补充说明对话的 SSE 响应与服务端主动推送的区别。

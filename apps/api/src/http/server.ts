@@ -12,6 +12,7 @@ import { registerScheduleRoutes } from './routes/schedules.js'
 import { registerSystemRoutes } from './routes/system.js'
 import { registerNotificationRoutes } from './routes/notifications.js'
 import { registerAuthRoutes } from './routes/auth.js'
+import { registerIntegrationRoutes } from './routes/integrations.js'
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false, trustProxy: true })
@@ -70,6 +71,7 @@ export function buildServer(): FastifyInstance {
 
   registerSystemRoutes(app)
   registerAuthRoutes(app)
+  registerIntegrationRoutes(app)
   registerNotificationRoutes(app)
   registerProjectRoutes(app)
   registerObservationRoutes(app)

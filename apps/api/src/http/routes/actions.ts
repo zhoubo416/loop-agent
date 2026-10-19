@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { getDb } from '../../db/client.js'
 import { resolveUser } from '../auth.js'
+import { ApiError } from '../errors.js'
 import { requireProjectAccess } from '../../modules/access.js'
 import {
   confirmAction,
@@ -15,11 +16,13 @@ import {
 } from '../../modules/actions.js'
 import { getExecution, listExecutions } from '../../modules/executions.js'
 import { listDocuments } from '../../modules/documents.js'
+import { getMeetingImport, meetingImportToApi } from '../../modules/meeting-imports.js'
 import {
   getRecommendation,
   listRecommendations,
   resolveRecommendation,
 } from '../../modules/recommendations.js'
+import { importTencentMeeting } from '../../integrations/tencent-meeting-import.js'
 import { cancelAction, completeAction, failAction } from '../../runtime/action-service.js'
 import { syncActiveActions } from '../../runtime/active-actions.js'
 
@@ -54,6 +57,17 @@ const completeSchema = z.object({
 
 const failSchema = z.object({ reason: z.string().min(1) })
 const cancelSchema = z.object({ reason: z.string().optional() })
+const meetingImportSchema = z
+  .object({
+    meeting_id: z.string().min(1).optional(),
+    meeting_code: z.string().min(1).optional(),
+    sub_meeting_id: z.string().min(1).optional(),
+    started_at: z.string().min(1).optional(),
+    ended_at: z.string().min(1).optional(),
+  })
+  .refine((value) => Boolean(value.meeting_id || value.meeting_code), {
+    message: 'meeting_id 或 meeting_code 至少提供一个',
+  })
 const acceptSchema = z
   .object({
     create_action: z.boolean().optional(),
@@ -114,7 +128,36 @@ export function registerActionRoutes(app: FastifyInstance): void {
       analysis: await getActionAnalysis(getDb(), projectId, actionId),
       source: await getActionSource(getDb(), projectId, action),
       documents: await listDocuments(getDb(), projectId, actionId),
+      meeting_import: await getMeetingImport(getDb(), actionId).then((row) =>
+        row ? meetingImportToApi(row) : null,
+      ),
     }
+  })
+
+  /** 从腾讯会议读取一场已结束会议,保存为当前会议 Action 的导入快照 */
+  app.post('/api/v1/projects/:projectId/actions/:actionId/meeting-import', async (request) => {
+    const user = await resolveUser(request)
+    const { projectId, actionId } = request.params as { projectId: string; actionId: string }
+    await requireProjectAccess(getDb(), projectId, user.id, 'member')
+    const action = await getAction(getDb(), projectId, actionId)
+    if (action.kind !== 'meeting') {
+      throw new ApiError('ACTION_KIND_MISMATCH', '只有会议类型的 Action 才能导入腾讯会议内容')
+    }
+    if (!['pending', 'running'].includes(action.status)) {
+      throw new ApiError('ACTION_INVALID_STATE', '这个 Action 已经结束,不能再导入会议内容')
+    }
+
+    const body = meetingImportSchema.parse(request.body ?? {})
+    const imported = await importTencentMeeting(getDb(), {
+      actionId,
+      userId: user.id,
+      ...(body.meeting_id ? { meetingId: body.meeting_id } : {}),
+      ...(body.meeting_code ? { meetingCode: body.meeting_code } : {}),
+      ...(body.sub_meeting_id ? { subMeetingId: body.sub_meeting_id } : {}),
+      ...(body.started_at ? { startedAt: body.started_at } : {}),
+      ...(body.ended_at ? { endedAt: body.ended_at } : {}),
+    })
+    return { meeting_import: meetingImportToApi(imported) }
   })
 
   /** Agent 提议的 Action,由用户确认后才进入可执行状态 */
