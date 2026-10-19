@@ -143,6 +143,14 @@ function openNotifications() {
   void navigateTo(`/projects/${projectId.value}/notifications`)
 }
 
+function handleEnter(event: KeyboardEvent) {
+  // 输入法选词时,回车用于确认候选词,不能当成发送
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.shiftKey) return
+  event.preventDefault()
+  if (!sending.value) void send()
+}
+
 async function send() {
   const content = draft.value.trim()
   if (!content || sending.value) return
@@ -391,12 +399,11 @@ async function send() {
               :rows="3"
               variant="none"
               class="w-full"
-              :placeholder="pinnedDoc ? '和智能体讨论这份资料…(⌘/Ctrl + 回车发送)' : '和智能体讨论项目…(⌘/Ctrl + 回车发送)'"
-              @keydown.meta.enter.prevent="send"
-              @keydown.ctrl.enter.prevent="send"
+              :placeholder="pinnedDoc ? '和智能体讨论这份资料…(回车发送，Shift + 回车换行)' : '和智能体讨论项目…(回车发送，Shift + 回车换行)'"
+              @keydown="handleEnter"
             />
             <div class="flex items-center justify-between px-3 pb-2">
-              <span class="text-[11px] text-muted">⌘/Ctrl + 回车发送</span>
+              <span class="text-[11px] text-muted">回车发送，Shift + 回车换行</span>
               <UButton
                 icon="i-lucide-arrow-up"
                 size="sm"
