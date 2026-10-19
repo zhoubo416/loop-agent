@@ -51,6 +51,7 @@ Memory 记录项目开发过程中积累的经验和习惯,也是项目 Memory �
 - **提交规范** (`docs/memory/commit-conventions.md`) — 准备提交、组织 commit、处理分支或把改动合回主线时阅读。
 - **依赖管理与第三方执行代码审查** (`docs/memory/dependency-management.md`) — 新增、升级、重新解析或安装第三方依赖时阅读。
 - **本地开发环境** (`docs/memory/local-development.md`) — 启动后端或前端、准备数据库、运行测试或排查本地环境问题时阅读。
+- **Docker 部署** (`docs/memory/deployment.md`) — 构建镜像、用 Docker 部署或调整线上运行配置时阅读。
 
 ## Design
 

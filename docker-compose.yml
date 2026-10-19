@@ -1,0 +1,30 @@
+# 单容器同时提供前端(3000)与 API(4000);浏览器直连 API,两个端口都要映射出来
+services:
+  loop:
+    build:
+      context: .
+      # 海外网络构建时改用官方源:
+      # args:
+      #   NPM_REGISTRY: https://registry.npmjs.org
+    init: true
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "4000:4000"
+    environment:
+      # 浏览器访问 API 的地址:默认值只适合浏览器和容器在同一台机器,
+      # 跨机器访问要改成 http://<服务器IP或域名>:4000/api/v1
+      NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-http://127.0.0.1:4000/api/v1}
+      # Agent 服务配置,从仓库根目录 .env 读取,与本地开发共用一份;
+      # BASE_URL 和 MODEL 兜底成代码里的默认值,因为空字符串会盖掉代码默认值
+      AGENT_ENGINE_BASE_URL: ${AGENT_ENGINE_BASE_URL:-https://api.openai.com/v1}
+      AGENT_ENGINE_API_KEY: ${AGENT_ENGINE_API_KEY:-}
+      AGENT_ENGINE_MODEL: ${AGENT_ENGINE_MODEL:-gpt-4o-mini}
+      TENCENT_MEETING_TOKEN_ENCRYPTION_KEY: ${TENCENT_MEETING_TOKEN_ENCRYPTION_KEY:-}
+      # 需要外部 PostgreSQL 时再配置;不配则使用容器内 PGlite,数据落在 loop-data 卷
+      # DATABASE_URL: postgres://user:password@host:5432/loop
+    volumes:
+      - loop-data:/app/.data
+
+volumes:
+  loop-data:
