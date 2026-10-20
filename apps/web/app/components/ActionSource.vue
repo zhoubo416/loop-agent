@@ -13,11 +13,21 @@ interface ActionSource {
 
 const props = defineProps<{ source: ActionSource | null }>()
 
-const hasSource = computed(() => {
+// 触发信息优先取原始观察;没有观察时退回事件,再退回建议,避免同一件事重复展示
+const trigger = computed(() => {
   const source = props.source
-  if (!source) return false
-  return Boolean(source.event || source.recommendation || source.run?.observation || source.run?.judgment)
+  if (source?.run?.observation) return source.run.observation.content
+  if (source?.event) {
+    return source.event.content && source.event.content !== source.event.title
+      ? `${source.event.title}\n\n${source.event.content}`
+      : source.event.title
+  }
+  return source?.recommendation?.content ?? null
 })
+
+const judgment = computed(() => props.source?.run?.judgment ?? null)
+
+const hasSource = computed(() => Boolean(trigger.value || judgment.value))
 </script>
 
 <template>
@@ -25,25 +35,19 @@ const hasSource = computed(() => {
     <template #header>
       <span class="text-sm font-medium">来源</span>
     </template>
-    <div class="flex flex-col gap-1.5 text-sm">
-      <div v-if="source?.run?.observation">
-        <span class="text-muted">由这条信息触发:</span>
-        {{ source.run.observation.content }}
+    <div class="flex flex-col gap-3">
+      <div v-if="trigger">
+        <span class="text-xs text-muted">触发信息</span>
+        <!-- eslint-disable-next-line vue/no-v-html -- 内容本身带 Markdown 格式,markdown-it 已转义原始 HTML -->
+        <div
+          class="lo-md mt-1 max-h-40 overflow-y-auto text-sm text-muted"
+          v-html="renderMarkdown(trigger)"
+        ></div>
       </div>
-      <div v-if="source?.event">
-        <span class="text-muted">事件:</span>
-        {{ source.event.title }}
-        <span v-if="source.event.content && source.event.content !== source.event.title">
-          — {{ source.event.content }}
-        </span>
-      </div>
-      <div v-if="source?.recommendation">
-        <span class="text-muted">建议:</span>
-        {{ source.recommendation.content }}
-      </div>
-      <div v-if="source?.run?.judgment">
-        <span class="text-muted">智能体判断:</span>
-        {{ source.run.judgment }}
+      <div v-if="judgment">
+        <span class="text-xs text-muted">智能体判断</span>
+        <!-- eslint-disable-next-line vue/no-v-html -- 同上 -->
+        <div class="lo-md mt-1 text-sm" v-html="renderMarkdown(judgment)"></div>
       </div>
     </div>
   </UCard>

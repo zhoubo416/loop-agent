@@ -139,6 +139,9 @@ function failWithReason() {
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <h1 class="text-xl font-semibold">{{ action.title }}</h1>
+          <p v-if="action.description" class="mt-1 break-words whitespace-pre-wrap text-sm text-muted">
+            {{ action.description }}
+          </p>
           <p class="mt-1 text-sm text-muted">
             {{ formatDateTime(action.created_at) }} 创建 ·
             {{ executorLabel(action.executor_type) }}执行
