@@ -133,7 +133,7 @@ function failWithReason() {
           <p class="mt-1 text-sm text-muted">
             {{ formatDateTime(action.created_at) }} 创建 ·
             {{ executorLabel(action.executor_type) }}执行
-            <template v-if="action.due_at"> · 截止 {{ formatDateTime(action.due_at) }}</template>
+            <template v-if="action.due_at"> · 会议时间 {{ formatDateTime(action.due_at) }}</template>
           </p>
         </div>
         <div class="flex shrink-0 items-center gap-2">

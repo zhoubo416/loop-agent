@@ -77,42 +77,187 @@ export interface ListActionsQuery {
   executorType?: string
   priority?: string
   assigneeId?: string
+  kind?: string
   limit?: number
+}
+
+export interface ActionMeetingSummary {
+  meeting_title: string | null
+  started_at: Date | string | null
+  ended_at: Date | string | null
+  participants: string[]
+  summary: string | null
+  content_source: string
+}
+
+export interface ActionDocumentSummary {
+  count: number
+  names: string[]
+  parsed_count: number
+  unsupported_count: number
+  failed_count: number
+  extracted_chars: number
+}
+
+export interface ActionResultSummary {
+  summary: string | null
+  participants: string[]
+}
+
+/** 列表项:会议和资料类型额外带业务摘要,供各自列表页展示 */
+export interface ActionListRow extends ActionRow {
+  meeting?: ActionMeetingSummary | null
+  documents?: ActionDocumentSummary | null
+  result?: ActionResultSummary | null
 }
 
 export async function listActions(
   db: Db,
   projectId: string,
   query: ListActionsQuery = {},
-): Promise<ActionRow[]> {
+): Promise<ActionListRow[]> {
   const params: unknown[] = [projectId]
-  const conditions = ['project_id = $1']
+  const conditions = ['a.project_id = $1']
   if (query.status) {
     params.push(query.status)
-    conditions.push(`status = $${params.length}`)
+    conditions.push(`a.status = $${params.length}`)
   }
   if (query.executorType) {
     params.push(query.executorType)
-    conditions.push(`executor_type = $${params.length}`)
+    conditions.push(`a.executor_type = $${params.length}`)
   }
   if (query.priority) {
     params.push(query.priority)
-    conditions.push(`priority = $${params.length}`)
+    conditions.push(`a.priority = $${params.length}`)
   }
   if (query.assigneeId) {
     params.push(query.assigneeId)
-    conditions.push(`assignee_id = $${params.length}`)
+    conditions.push(`a.assignee_id = $${params.length}`)
   }
+  if (query.kind) {
+    params.push(query.kind)
+    conditions.push(`a.kind = $${params.length}`)
+  }
+
+  // 列表页要展示的内容摘要,只按 kind 拼对应的 join
+  const selects = ['a.*']
+  const joins: string[] = []
+  if (query.kind === 'meeting') {
+    selects.push(
+      'mi.action_id IS NOT NULL AS has_meeting_import',
+      'mi.meeting_title AS import_meeting_title',
+      'mi.started_at AS import_started_at',
+      'mi.ended_at AS import_ended_at',
+      'mi.participants AS import_participants',
+      'mi.summary AS import_summary',
+      'mi.content_source AS import_content_source',
+    )
+    joins.push('LEFT JOIN action_meeting_imports mi ON mi.action_id = a.id')
+  }
+  if (query.kind === 'document') {
+    selects.push(
+      'docs.document_count',
+      'docs.document_names',
+      'docs.parsed_count',
+      'docs.unsupported_count',
+      'docs.failed_count',
+      'docs.extracted_chars',
+    )
+    joins.push(`LEFT JOIN LATERAL (
+      SELECT count(*)::int AS document_count,
+             (array_agg(d.name ORDER BY d.created_at))[1:3] AS document_names,
+             count(*) FILTER (WHERE d.parse_status = 'ok')::int AS parsed_count,
+             count(*) FILTER (WHERE d.parse_status = 'unsupported')::int AS unsupported_count,
+             count(*) FILTER (WHERE d.parse_status = 'failed')::int AS failed_count,
+             coalesce(sum(length(d.extracted_text)), 0)::int AS extracted_chars
+      FROM action_documents d WHERE d.action_id = a.id
+    ) docs ON true`)
+  }
+  if (query.kind === 'meeting' || query.kind === 'document') {
+    selects.push(
+      'latest.output IS NOT NULL AS has_result',
+      "latest.output->>'summary' AS result_summary",
+      "latest.output->'participants' AS result_participants",
+    )
+    joins.push(`LEFT JOIN LATERAL (
+      SELECT e.output FROM executions e
+      WHERE e.action_id = a.id AND e.status = 'completed'
+      ORDER BY e.completed_at DESC NULLS LAST, e.started_at DESC
+      LIMIT 1
+    ) latest ON true`)
+  }
+
   params.push(query.limit ?? 100)
-  const result = await db.query<ActionRow>(
-    `SELECT * FROM actions WHERE ${conditions.join(' AND ')}
+  const result = await db.query<Row>(
+    `SELECT ${selects.join(', ')}
+     FROM actions a
+     ${joins.join('\n')}
+     WHERE ${conditions.join(' AND ')}
      ORDER BY
-       CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-       created_at DESC
+       CASE a.status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+       a.created_at DESC
      LIMIT $${params.length}`,
     params,
   )
-  return result.rows
+
+  const aliases = [
+    'has_meeting_import',
+    'import_meeting_title',
+    'import_started_at',
+    'import_ended_at',
+    'import_participants',
+    'import_summary',
+    'import_content_source',
+    'document_count',
+    'document_names',
+    'parsed_count',
+    'unsupported_count',
+    'failed_count',
+    'extracted_chars',
+    'has_result',
+    'result_summary',
+    'result_participants',
+  ]
+  return result.rows.map((row) => {
+    const item = { ...row } as ActionListRow
+    for (const key of aliases) delete item[key]
+
+    if (query.kind === 'meeting') {
+      item.meeting = row.has_meeting_import
+        ? {
+            meeting_title: (row.import_meeting_title as string | null) ?? null,
+            started_at: (row.import_started_at as Date | string | null) ?? null,
+            ended_at: (row.import_ended_at as Date | string | null) ?? null,
+            participants: Array.isArray(row.import_participants)
+              ? (row.import_participants as string[])
+              : [],
+            summary: (row.import_summary as string | null) ?? null,
+            content_source: (row.import_content_source as string) ?? 'minutes',
+          }
+        : null
+    }
+    if (query.kind === 'document') {
+      item.documents = {
+        count: Number(row.document_count ?? 0),
+        names: Array.isArray(row.document_names) ? (row.document_names as string[]) : [],
+        parsed_count: Number(row.parsed_count ?? 0),
+        unsupported_count: Number(row.unsupported_count ?? 0),
+        failed_count: Number(row.failed_count ?? 0),
+        extracted_chars: Number(row.extracted_chars ?? 0),
+      }
+    }
+    if (query.kind === 'meeting' || query.kind === 'document') {
+      item.result = row.has_result
+        ? {
+            summary: (row.result_summary as string | null) ?? null,
+            participants: Array.isArray(row.result_participants)
+              ? (row.result_participants as string[])
+              : [],
+          }
+        : null
+    }
+    return item
+  })
 }
 
 export async function listOpenActions(db: Db, projectId: string): Promise<ActionRow[]> {

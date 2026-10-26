@@ -944,6 +944,27 @@ test('完成 meeting 型 Action 会采集结构化结果并写进 Observation', 
   assert.match(observation.json.content, /后续行动:补充对照组/)
 })
 
+test('行动列表可以按 kind 过滤', async () => {
+  const task = await api('POST', `/api/v1/projects/${projectId}/actions`, {
+    title: '按类型过滤的任务',
+    kind: 'task',
+  })
+  const meeting = await api('POST', `/api/v1/projects/${projectId}/actions`, {
+    title: '按类型过滤的会议',
+    kind: 'meeting',
+  })
+
+  const tasks = await api('GET', `/api/v1/projects/${projectId}/actions?kind=task`)
+  assert.ok(tasks.json.items.every((item: { kind: string }) => item.kind === 'task'))
+  assert.ok(tasks.json.items.some((item: { id: string }) => item.id === task.json.id))
+  assert.ok(!tasks.json.items.some((item: { id: string }) => item.id === meeting.json.id))
+
+  // 概览里的行动带着 kind,列表页才能跳到对应类型的详情页
+  const overview = await api('GET', `/api/v1/projects/${projectId}/overview`)
+  const active = overview.json.active_actions.find((item: { id: string }) => item.id === meeting.json.id)
+  assert.equal(active.kind, 'meeting')
+})
+
 test('完成 Action 后能追溯到智能体的分析结论', async () => {
   const created = await api('POST', `/api/v1/projects/${projectId}/actions`, {
     title: '分析第一轮数据',
@@ -1054,6 +1075,13 @@ test('资料行动可以上传文档,解析文本入库并取回文件字节', a
   const txtDoc = detail.json.documents.find((doc: { name: string }) => doc.name === 'sample.txt')
   assert.ok(txtDoc)
   assert.ok(txtDoc.extracted_chars > 0)
+
+  // 资料列表带文档摘要:数量、文件名和解析结果
+  const listed = await api('GET', `/api/v1/projects/${projectId}/actions?kind=document`)
+  const listedAction = listed.json.items.find((item: { id: string }) => item.id === documentActionId)
+  assert.equal(listedAction.documents.count, 2)
+  assert.ok(listedAction.documents.names.includes('sample.txt'))
+  assert.equal(listedAction.documents.parsed_count, 2)
 
   // 不支持的格式标记为 unsupported,并可以删除
   const png = fs.readFileSync(path.join(fixturesDir, 'sample.png'))
@@ -1187,6 +1215,11 @@ test('完成资料行动时 Observation 带上要点和文件名', async () => {
   )
   assert.match(observation.json.content, /要点:第二轮数据已回收,结论待确认/)
   assert.match(observation.json.content, /文件:sample\.txt、实验记录\.docx、report\.docx/)
+
+  // 列表里能直接拿到整理结论,资料库不用逐条打开详情
+  const listed = await api('GET', `/api/v1/projects/${projectId}/actions?kind=document`)
+  const listedAction = listed.json.items.find((item: { id: string }) => item.id === documentActionId)
+  assert.equal(listedAction.result.summary, '资料整理完成')
 })
 
 test('行动结束后不能再修改文档,非成员没有上传权限', async () => {

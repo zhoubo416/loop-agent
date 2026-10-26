@@ -72,7 +72,9 @@ const navItems = computed(() => {
   return [
     { label: '概览', to: `/projects/${id}`, icon: 'i-lucide-layout-dashboard' },
     { label: '时间线', to: `/projects/${id}/timeline`, icon: 'i-lucide-history' },
-    { label: '行动', to: `/projects/${id}/actions`, icon: 'i-lucide-list-checks' },
+    { label: '任务', to: `/projects/${id}/tasks`, icon: 'i-lucide-list-checks' },
+    { label: '会议', to: `/projects/${id}/meetings`, icon: 'i-lucide-video' },
+    { label: '资料库', to: `/projects/${id}/documents`, icon: 'i-lucide-folder-open' },
     { label: '设置', to: `/projects/${id}/settings`, icon: 'i-lucide-settings' },
   ]
 })

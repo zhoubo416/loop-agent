@@ -24,7 +24,7 @@ export interface Overview {
   open_issues: unknown[]
   risks: unknown[]
   unknowns: unknown[]
-  active_actions: Array<{ id: string; title: string; priority: string; status: string; assignee_id: string | null }>
+  active_actions: Array<{ id: string; title: string; kind: string; priority: string; status: string; assignee_id: string | null }>
   recommendations: Array<{
     id: string
     type: string
@@ -33,7 +33,7 @@ export interface Overview {
     created_at: Date | string
   }>
   recent_activity: Array<{ id: string; type: string; title: string; created_at: Date | string }>
-  proposed_actions: Array<{ id: string; title: string; priority: string; created_at: Date | string }>
+  proposed_actions: Array<{ id: string; title: string; kind: string; priority: string; created_at: Date | string }>
   state_proposals: Array<{
     id: string
     proposal: unknown
@@ -72,6 +72,7 @@ export async function getOverview(db: Db, project: ProjectRow): Promise<Overview
     active_actions: actions.map((action) => ({
       id: action.id,
       title: action.title,
+      kind: action.kind,
       priority: action.priority,
       status: action.status,
       assignee_id: action.assignee_id,
@@ -86,6 +87,7 @@ export async function getOverview(db: Db, project: ProjectRow): Promise<Overview
     proposed_actions: proposedActions.map((action) => ({
       id: action.id,
       title: action.title,
+      kind: action.kind,
       priority: action.priority,
       created_at: action.created_at,
     })),

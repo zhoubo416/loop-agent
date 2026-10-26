@@ -787,7 +787,16 @@ Query：
 status=pending
 executor_type=human
 priority=high
+kind=task
 ```
+
+带 `kind` 时，列表项在 Action 字段之外按类型返回摘要，供各自的列表页直接展示：
+
+- `kind=meeting`：`meeting` 为 `{ meeting_title, started_at, ended_at, participants, summary, content_source }`，来自腾讯会议导入快照；没有导入时为 `null`。
+- `kind=document`：`documents` 为 `{ count, names, parsed_count, unsupported_count, failed_count, extracted_chars }`，`names` 最多带三个文件名。
+- 会议和资料还带 `result`：`{ summary, participants }`，来自该行动最近一次 `completed` 的 Execution；没有完成记录时为 `null`。只取摘要和参会人，不返回完整 output。
+
+列表页用这些摘要展示参会人、结论、文档数量和解析状态，不需要逐条打开详情。
 
 ---
 
@@ -1202,6 +1211,7 @@ GET /api/v1/projects/{project_id}/overview
     {
       "id": "action-id",
       "title": "分析实验 B 数据",
+      "kind": "task",
       "priority": "high",
       "status": "pending"
     }
@@ -1975,6 +1985,8 @@ Run Agent
 
 ## 修改历史
 
+- 2026-10-26：`GET /projects/{project_id}/actions` 按 `kind` 返回列表摘要：会议带导入的会议时间、参会人和结论，资料带文档数量、文件名、解析状态和字数，会议与资料都带最近一次完成结果的摘要。
+- 2026-10-26：`GET /projects/{project_id}/actions` 增加 `kind` 查询参数，任务、会议、资料库三个列表各自只取自己这一类行动；Overview 的 `active_actions` 与 `proposed_actions` 补上 `kind`，首页链接能跳到对应类型的详情页。
 - 2026-10-19：第 47 节会议导入快照增加 `summary`（会议结论）；会议详情页只提交参与人和纪要，决定与后续行动不再单独提交，内容随纪要进入 Observation。
 - 2026-10-18：第 47 节 `meeting-import` 请求体补充可选 `started_at` / `ended_at`，周期会议用它定位到选中的那一场实例。
 - 2026-10-18：第 47 节新增腾讯会议集成接口：个人 Token 绑定/解绑/状态、已结束会议列表、会议内容导入；Action 详情响应增加 `meeting_import`，逐字稿只存快照不进入 Observation。第 38 节补充 `INTEGRATION_*` 与 `MEETING_*` 错误码。

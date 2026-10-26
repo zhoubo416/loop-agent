@@ -86,6 +86,7 @@ export function registerActionRoutes(app: FastifyInstance): void {
       executor_type?: string
       priority?: string
       assignee_id?: string
+      kind?: string
     }
     return {
       items: await listActions(getDb(), projectId, {
@@ -93,6 +94,7 @@ export function registerActionRoutes(app: FastifyInstance): void {
         ...(query.executor_type ? { executorType: query.executor_type } : {}),
         ...(query.priority ? { priority: query.priority } : {}),
         ...(query.assignee_id ? { assigneeId: query.assignee_id } : {}),
+        ...(query.kind ? { kind: query.kind } : {}),
       }),
     }
   })

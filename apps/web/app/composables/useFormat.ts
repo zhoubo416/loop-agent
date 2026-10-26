@@ -21,6 +21,14 @@ export function formatSize(value?: number | string | null): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
+/** datetime-local 的输入值转成 ISO;空值和非法值返回 null */
+export function localInputToIso(value?: string | null): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
+}
+
 export const statusLabels: Record<string, string> = {
   created: '已创建',
   active: '进行中',

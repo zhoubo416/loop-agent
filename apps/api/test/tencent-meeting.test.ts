@@ -390,6 +390,13 @@ test('会议导入保存快照,重复导入只更新同一条记录', async () =
   assert.equal(snapshot.content_source, 'minutes')
   assert.equal(transcriptsCalls, 1)
 
+  // 会议列表直接带出导入摘要,会议页不用逐条打开详情
+  const listed = await api('GET', `/api/v1/projects/${projectId}/actions?kind=meeting`)
+  const listedMeeting = listed.json.items.find((item: { id: string }) => item.id === meetingActionId)
+  assert.equal(listedMeeting.meeting.meeting_title, '产品评审')
+  assert.deepEqual(listedMeeting.meeting.participants, ['张三', '李四'])
+  assert.equal(listedMeeting.meeting.summary, '本次会议确定了发布范围。')
+
   const again = await api(
     'POST',
     `/api/v1/projects/${projectId}/actions/${meetingActionId}/meeting-import`,

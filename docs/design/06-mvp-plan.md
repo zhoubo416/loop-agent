@@ -1946,7 +1946,7 @@ Phase 6  State             完成：State Proposal、version 乐观锁、State �
 Phase 7  Action + Execution 完成：创建、指派人、确认、拒绝、完成、失败、取消、事件关联
 Phase 8  Recommendation    完成：接受（可生成 Action）、拒绝、完成建议
 Phase 9  Chat              完成：多会话对话（converse 流式回复）+ “问题+回复”自动触发思考 + 右侧思考面板
-Phase 10 Timeline 与前端    完成：Overview、Chat、Timeline、Actions、Action Detail、Settings
+Phase 10 Timeline 与前端    完成：Overview、Chat、Timeline、任务、会议、资料库、Action Detail、Settings
 Phase 11 Schedule          完成：cron/interval/once/event，按执行窗口去重
 Phase 12 Memory            基础完成：create 与 query，未做语义检索
 Phase 13 可靠性             完成：请求幂等、Schedule 去重、Project 锁、State 乐观锁、重试
@@ -1965,7 +1965,9 @@ P2 的 Notification 与 Risk 也已落地：Risk Engine 确定性计算三类风
 
 Action 不再只是翻状态：带 `kind`（task / meeting / document），完成时按类型采集结构化结果并写回 Agent 上下文。
 
-前端把 Action 详情按类型拆成三个独立页面（会议页 / 任务页 / 资料页），列表和 Overview 按 kind 跳转到对应页面，完成、失败、取消都在详情页上操作。
+前端把 Action 按类型拆成三个独立菜单（任务 / 会议 / 资料库），列表各自只列一种类型，新建时类型固定；详情页也按类型分开，列表和 Overview 按 kind 跳转到对应页面，完成、失败、取消都在详情页上操作。
+
+三个列表按各自业务展示摘要：任务带负责人、截止时间和逾期提醒；会议带会议时间、参会人、结论，并可以在列表里直接导入腾讯会议；资料库带文档数量、文件名、解析状态和整理结论，并支持选文件后自动创建整理和上传。
 
 资料页已经升级为完整的资料工作台：支持本机多文件上传和文件直链导入，服务端提取文本入库；文档用 Open File Viewer 预览；「去对话」把资料文本作为对话上下文带进 Chat；整理支持手工填写和「AI 整理」草稿修订，点「完成并交给智能体」才产生 Observation 触发思考。
 
@@ -1988,6 +1990,8 @@ agent / system 两类 Action 执行器的自动执行
 
 ## 修改历史
 
+- 2026-10-26：第 38.2 节记录三个列表按业务展示摘要（任务负责人/截止、会议时间/参会人/结论、资料文档数与解析状态），并支持会议列表直接导入腾讯会议、资料库选文件直接创建整理和上传。
+- 2026-10-26：第 38.2 节记录行动列表拆成任务、会议、资料库三个独立菜单，各自只列一种类型、新建时类型固定。
 - 2026-10-18：第 38.2 节记录腾讯会议内容导入落地（个人 Token 绑定、已结束会议选择、纪要/参会人/逐字稿导入，逐字稿不进 Observation）；第 38.3 节移除“腾讯会议内容同步”这一未实现项。
 - 2026-10-16：第 38.2 节记录对话回复改为流式（SSE 逐段下发，前端边生成边显示），以及模型推理过程的折叠展示与保存。
 - 2026-10-14：第 38.2 节补充资料工作台的落地情况（文档上传/URL 导入、文本提取、Open File Viewer 预览、资料对话与 AI 整理）。

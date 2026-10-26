@@ -95,7 +95,7 @@ const participants = computed(() => {
       color="warning"
       variant="soft"
       title="这个行动还在等待确认"
-      description="确认后才会进入执行,可以在行动列表里确认或拒绝。"
+      description="确认后才会进入执行,可以在对应列表里确认或拒绝。"
     />
 
     <template v-else-if="status === 'completed'">
