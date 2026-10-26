@@ -59,132 +59,151 @@ export async function processAgentOutput(
   run: AgentRunRow,
   output: AgentOutput,
 ): Promise<ProcessResult> {
+  return db.transaction((tx) => processAgentOutputInTx(tx, run, output))
+}
+
+/** 在调用方已经持有的事务中处理 Output,用于和 Agent Run 完成原子提交。 */
+export async function processAgentOutputInTx(
+  tx: Db,
+  run: AgentRunRow,
+  output: AgentOutput,
+): Promise<ProcessResult> {
   const observationId = run.trigger_type === 'observation' ? run.trigger_id : null
 
-  return db.transaction(async (tx) => {
-    const result: ProcessResult = {
-      eventIds: [],
-      actionIds: [],
-      resolvedActionIds: [],
-      recommendationIds: [],
-      memoryIds: [],
-      stateProposalIds: [],
-      skippedActions: [],
-    }
-    if (output.judgment) result.judgment = output.judgment
+  const runStatus = await tx.query<{ status: string }>(
+    'SELECT status FROM agent_runs WHERE id = $1 FOR UPDATE',
+    [run.id],
+  )
+  if (runStatus.rows[0]?.status === 'cancelled') {
+    throw new Error('Agent Run 已取消')
+  }
+  const result: ProcessResult = {
+    eventIds: [],
+    actionIds: [],
+    resolvedActionIds: [],
+    recommendationIds: [],
+    memoryIds: [],
+    stateProposalIds: [],
+    skippedActions: [],
+  }
+  if (output.judgment) result.judgment = output.judgment
 
-    for (const event of output.events ?? []) {
-      const created = await insertEvent(tx, {
+  for (const event of output.events ?? []) {
+    const created = await insertEvent(tx, {
+      projectId: run.project_id,
+      observationId,
+      agentRunId: run.id,
+      type: event.type,
+      title: event.title,
+      content: event.content,
+      occurredAt: event.occurredAt ?? null,
+    })
+    result.eventIds.push(created.id)
+  }
+
+  for (const eventType of new Set((output.events ?? []).map((event) => event.type))) {
+    await triggerEventSchedules(tx, run.project_id, eventType)
+  }
+
+  const [openActions, proposedActions] = await Promise.all([
+    listOpenActions(tx, run.project_id),
+    listProposedActions(tx, run.project_id),
+  ])
+  const openTitles = new Set([...openActions, ...proposedActions].map((action) => action.title))
+
+  for (const action of output.actions ?? []) {
+    // 引用已有 Action:把本次识别出的事件与进行中的 Action 关联起来
+    if (action.id && action.status) {
+      await resolveAgentActionInTx(tx, {
         projectId: run.project_id,
-        observationId,
+        actionId: action.id,
+        status: action.status,
+        summary: action.description ?? undefined,
         agentRunId: run.id,
-        type: event.type,
-        title: event.title,
-        content: event.content,
-        occurredAt: event.occurredAt ?? null,
       })
-      result.eventIds.push(created.id)
+      result.resolvedActionIds.push(action.id)
+      continue
     }
 
-    for (const eventType of new Set((output.events ?? []).map((event) => event.type))) {
-      await triggerEventSchedules(tx, run.project_id, eventType)
+    if (!action.title) {
+      result.skippedActions.push('(缺少标题)')
+      continue
     }
-
-    const [openActions, proposedActions] = await Promise.all([
-      listOpenActions(tx, run.project_id),
-      listProposedActions(tx, run.project_id),
-    ])
-    const openTitles = new Set([...openActions, ...proposedActions].map((action) => action.title))
-
-    for (const action of output.actions ?? []) {
-      // 引用已有 Action:把本次识别出的事件与进行中的 Action 关联起来
-      if (action.id && action.status) {
-        await resolveAgentActionInTx(tx, {
-          projectId: run.project_id,
-          actionId: action.id,
-          status: action.status,
-          summary: action.description ?? undefined,
-          agentRunId: run.id,
-        })
-        result.resolvedActionIds.push(action.id)
-        continue
-      }
-
-      if (!action.title) {
-        result.skippedActions.push('(缺少标题)')
-        continue
-      }
       if (openTitles.has(action.title)) {
         result.skippedActions.push(action.title)
         continue
       }
+      if (action.executorType === 'system') {
+        result.skippedActions.push(`${action.title}(system executor 尚未配置)`)
+        continue
+      }
       const created = await insertAction(tx, {
-        projectId: run.project_id,
-        title: action.title,
-        description: action.description ?? null,
-        executorType: action.executorType ?? 'human',
-        assigneeId: action.assigneeId ?? null,
-        priority: action.priority ?? 'medium',
-        dueAt: action.dueAt ?? null,
-        eventId: result.eventIds[0] ?? null,
-        agentRunId: run.id,
-        status: 'proposed',
-        kind: action.kind ?? 'task',
-      })
-      result.actionIds.push(created.id)
-      openTitles.add(action.title)
-    }
-
-    for (const recommendation of output.recommendations ?? []) {
-      const created = await insertRecommendation(tx, {
-        projectId: run.project_id,
-        agentRunId: run.id,
-        judgment: output.judgment ?? null,
-        type: recommendation.type,
-        content: recommendation.content,
-        priority: recommendation.priority ?? 'medium',
-        requiresConfirmation: recommendation.requiresConfirmation ?? true,
-      })
-      result.recommendationIds.push(created.id)
-    }
-
-    if (output.stateProposal) {
-      const { auto, pending } = splitStateProposal(output.stateProposal)
-      if (auto) {
-        const state = await getState(tx, run.project_id)
-        const updated = await applyStateProposal(tx, run.project_id, auto, {
-          agentRunId: run.id,
-          expectedVersion: state.version,
-          changedByType: 'agent',
-        })
-        result.stateVersion = updated.version
-      }
-      if (pending) {
-        const created = await insertStateProposal(tx, run.project_id, pending, run.id)
-        result.stateProposalIds.push(created.id)
-      }
-    }
-
-    for (const memory of output.memories ?? []) {
-      const created = await insertMemory(tx, {
-        projectId: run.project_id,
-        agentRunId: run.id,
-        type: memory.type,
-        content: memory.content,
-        confidence: memory.confidence ?? null,
-        sourceType: 'agent_run',
-        sourceId: run.id,
-      })
-      result.memoryIds.push(created.id)
-    }
-
-    // State 里的 active_actions 是当前行动的摘要,由 Runtime 保持同步
-    const syncedVersion = await syncActiveActions(tx, run.project_id, {
+      projectId: run.project_id,
+      title: action.title,
+      description: action.description ?? null,
+      executorType: action.executorType ?? 'human',
+      assigneeId: action.assigneeId ?? null,
+      priority: action.priority ?? 'medium',
+      dueAt: action.dueAt ?? null,
+      eventId: result.eventIds[0] ?? null,
       agentRunId: run.id,
-      changedByType: 'system',
+      status: 'proposed',
+      kind: action.kind ?? 'task',
     })
-    if (result.stateVersion === undefined) result.stateVersion = syncedVersion
+    result.actionIds.push(created.id)
+    openTitles.add(action.title)
+  }
 
-    return result
+  for (const recommendation of output.recommendations ?? []) {
+    const created = await insertRecommendation(tx, {
+      projectId: run.project_id,
+      agentRunId: run.id,
+      judgment: output.judgment ?? null,
+      type: recommendation.type,
+      content: recommendation.content,
+      priority: recommendation.priority ?? 'medium',
+      requiresConfirmation: recommendation.requiresConfirmation ?? true,
+    })
+    result.recommendationIds.push(created.id)
+  }
+
+  if (output.stateProposal) {
+    const { auto, pending } = splitStateProposal(output.stateProposal)
+    if (auto) {
+      const state = await getState(tx, run.project_id)
+      const updated = await applyStateProposal(tx, run.project_id, auto, {
+        agentRunId: run.id,
+        expectedVersion: state.version,
+        changedByType: 'agent',
+      })
+      result.stateVersion = updated.version
+    }
+    if (pending) {
+      const expectedVersion = result.stateVersion ?? (await getState(tx, run.project_id)).version
+      const created = await insertStateProposal(tx, run.project_id, pending, run.id, expectedVersion)
+      result.stateProposalIds.push(created.id)
+    }
+  }
+
+  for (const memory of output.memories ?? []) {
+    const created = await insertMemory(tx, {
+      projectId: run.project_id,
+      agentRunId: run.id,
+      type: memory.type,
+      content: memory.content,
+      confidence: memory.confidence ?? null,
+      sourceType: 'agent_run',
+      sourceId: run.id,
+    })
+    result.memoryIds.push(created.id)
+  }
+
+  // State 里的 active_actions 是当前行动的摘要,由 Runtime 保持同步
+  const syncedVersion = await syncActiveActions(tx, run.project_id, {
+    agentRunId: run.id,
+    changedByType: 'system',
   })
+  if (result.stateVersion === undefined) result.stateVersion = syncedVersion
+
+  return result
 }

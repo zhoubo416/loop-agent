@@ -688,7 +688,7 @@ Active Actions
 
 作为主要 Context。
 
-Memory Retrieval 可以设计成独立接口：
+Memory Retrieval 通过独立接口实现：
 
 ```text
 MemoryService.retrieve(
@@ -707,6 +707,10 @@ MemoryService.retrieve(
 * memory consolidation
 
 Runtime 不应该绑定具体 Memory 实现。
+
+当前 MVP 使用项目隔离的轻量关键词召回，并用最近记忆补足结果；它不是向量检索，后续仍可替换为 embedding / semantic retrieval，而不改变 Context Builder 的调用边界。
+
+Action 的 `agent` executor 当前通过 Agent Run 的结构化输出或 Tool Calling 关联已有 Action 来完成；`system` executor 尚未配置具体工具和副作用协议，Runtime 会拒绝创建或跳过这类产出，不会把类型字段误当成已经具备自动执行能力。
 
 ---
 
@@ -2526,6 +2530,7 @@ Action 完成、失败、取消时，Execution、Action 状态、Observation 和
 
 ## 修改历史
 
+- 2026-10-20：补充 Agent Run 的超时回收、Project 锁续租和取消提交边界；Output、Run 完成与通知在同一事务中提交，避免取消后留下半成品产出；Memory Context 改为按当前上下文召回而不是固定只取最新记录；明确 `system` executor 未配置时拒绝创建，不伪装成自动执行。
 - 2026-10-15：第 19 节 Agent Output Protocol 补充输出长度要求：这份输出是给用户读的，只要“为什么产生这些变更”和“产生了什么”，各字段都要短，长度由 Engine 的 system prompt 约束，Runtime 不做事后截断。
 - 2026-10-14：新增第 49.9 节，记录资料文档的文本提取、文档对话、AI 整理（`organize` 模式）与完成提交的边界：上传/导入/整理不触发思考，提交时 Observation 附加文档名。
 - 2026-10-12：第 49.3 节更新 Chat 的对话与思考分离：`AgentEngine` 增加 `converse`，对话同步回复后自动提交 `conversation` Observation，judgment 不再回写会话消息。

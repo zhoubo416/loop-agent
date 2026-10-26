@@ -12,6 +12,16 @@ function int(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function corsOrigins(value: string | undefined, production: boolean): string[] | boolean {
+  const configured = value
+    ?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+  if (configured?.length) return configured
+  // 开发环境允许前端开发服务器跨端口访问;生产环境必须显式配置允许的前端来源
+  return production ? false : true
+}
+
 /**
  * 腾讯会议 MCP 的旧配置里只写了根地址,根地址已经失效。
  * 这里统一补上真实端点,避免本地 .env 里的旧值把请求发到 404。
@@ -47,6 +57,11 @@ export const config = {
   documentTextMaxChars: int(process.env.DOCUMENT_TEXT_MAX_CHARS, 200_000),
   documentContextMaxChars: int(process.env.DOCUMENT_CONTEXT_MAX_CHARS, 24_000),
   urlImportTimeoutMs: int(process.env.URL_IMPORT_TIMEOUT_MS, 30_000),
+  // 默认拒绝内网目标,需要本地测试时显式打开,避免部署时漏设 NODE_ENV 导致 SSRF
+  urlImportAllowPrivateNetworks: bool(
+    process.env.URL_IMPORT_ALLOW_PRIVATE_NETWORKS,
+    false,
+  ),
 
   agentEngine: (process.env.AGENT_ENGINE ?? 'pi').toLowerCase(),
   agentEngineBaseUrl: process.env.AGENT_ENGINE_BASE_URL ?? 'https://api.openai.com/v1',
@@ -70,6 +85,9 @@ export const config = {
   devUserEmail: process.env.DEV_USER_EMAIL ?? 'dev@loop.local',
   // 开发环境允许无凭据获取开发用户身份;生产环境关闭
   allowDevLogin: process.env.NODE_ENV !== 'production',
+  // X-User-Id 只是本地调试入口,生产环境不允许客户端自选身份
+  allowDevUserHeader: bool(process.env.ALLOW_DEV_USER_HEADER, process.env.NODE_ENV !== 'production'),
+  corsOrigin: corsOrigins(process.env.CORS_ORIGIN, process.env.NODE_ENV === 'production'),
 }
 
 export type Config = typeof config

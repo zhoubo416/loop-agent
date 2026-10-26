@@ -15,6 +15,8 @@ services:
       # 浏览器访问 API 的地址:默认值只适合浏览器和容器在同一台机器,
       # 跨机器访问要改成 http://<服务器IP或域名>:4000/api/v1
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:-http://127.0.0.1:4000/api/v1}
+      # 生产环境只允许控制台来源访问 API;跨机器部署时改成控制台的完整 Origin
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://127.0.0.1:3000}
       # Agent 服务配置,从仓库根目录 .env 读取,与本地开发共用一份;
       # BASE_URL 和 MODEL 兜底成代码里的默认值,因为空字符串会盖掉代码默认值
       AGENT_ENGINE_BASE_URL: ${AGENT_ENGINE_BASE_URL:-https://api.openai.com/v1}

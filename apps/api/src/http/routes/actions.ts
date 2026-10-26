@@ -7,6 +7,7 @@ import { requireProjectAccess } from '../../modules/access.js'
 import {
   confirmAction,
   declineAction,
+  assertActionExecutorSupported,
   getActionAnalysis,
   getActionSource,
   getAction,
@@ -104,6 +105,7 @@ export function registerActionRoutes(app: FastifyInstance): void {
     const { projectId } = request.params as { projectId: string }
     await requireProjectAccess(getDb(), projectId, user.id, 'member')
     const body = createActionSchema.parse(request.body ?? {})
+    assertActionExecutorSupported(body.executor_type)
     const action = await insertAction(getDb(), {
       projectId,
       title: body.title,
@@ -314,29 +316,32 @@ export function registerActionRoutes(app: FastifyInstance): void {
     }
     await requireProjectAccess(getDb(), projectId, user.id, 'member')
     const body = acceptSchema.parse(request.body ?? {}) ?? {}
-    const recommendation = await getRecommendation(getDb(), projectId, recommendationId)
+    const db = getDb()
+    return db.transaction(async (tx) => {
+      const recommendation = await getRecommendation(tx, projectId, recommendationId)
 
-    let action = null
-    if (body.create_action) {
-      action = await insertAction(getDb(), {
+      let action = null
+      if (body.create_action) {
+        action = await insertAction(tx, {
+          projectId,
+          title: body.title ?? recommendation.content.slice(0, 200),
+          description: recommendation.content,
+          executorType: 'human',
+          assigneeId: body.assignee_id ?? null,
+          priority: recommendation.priority as 'low' | 'medium' | 'high' | 'critical',
+          agentRunId: recommendation.agent_run_id,
+          recommendationId: recommendation.id,
+        })
+      }
+
+      const resolved = await resolveRecommendation(
+        tx,
         projectId,
-        title: body.title ?? recommendation.content.slice(0, 200),
-        description: recommendation.content,
-        executorType: 'human',
-        assigneeId: body.assignee_id ?? null,
-        priority: recommendation.priority as 'low' | 'medium' | 'high' | 'critical',
-        agentRunId: recommendation.agent_run_id,
-        recommendationId: recommendation.id,
-      })
-    }
-
-    const resolved = await resolveRecommendation(
-      getDb(),
-      projectId,
-      recommendationId,
-      body.create_action ? 'executed' : 'accepted',
-    )
-    return { ...resolved, action }
+        recommendationId,
+        body.create_action ? 'executed' : 'accepted',
+      )
+      return { ...resolved, action }
+    })
   })
 
   app.post('/api/v1/projects/:projectId/recommendations/:recommendationId/reject', async (request) => {

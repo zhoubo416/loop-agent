@@ -1,6 +1,8 @@
 import { createReadStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import dns from 'node:dns/promises'
+import { isIP } from 'node:net'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { getDb } from '../../db/client.js'
@@ -46,24 +48,124 @@ async function requireEditableDocumentAction(
   return action
 }
 
-/** 从 URL 抓取内容,受超时和大小上限约束 */
-async function fetchUrlBuffer(url: string): Promise<{ buffer: Buffer; mimeType: string | null }> {
-  const parsed = new URL(url)
+function ipv4ToNumber(ip: string): number {
+  return ip.split('.').reduce((value, part) => value * 256 + Number(part), 0)
+}
+
+function ipv6ToBigInt(ip: string): bigint {
+  let normalized = ip.toLowerCase()
+  const embeddedIpv4 = normalized.match(/(.*:)(\d+\.\d+\.\d+\.\d+)$/)
+  if (embeddedIpv4) {
+    const value = ipv4ToNumber(embeddedIpv4[2]!)
+    normalized = `${embeddedIpv4[1]}${(value >>> 16).toString(16)}:${(value & 0xffff).toString(16)}`
+  }
+
+  const [left, right] = normalized.split('::')
+  const leftGroups = left ? left.split(':') : []
+  const rightGroups = right ? right.split(':') : []
+  const missing = 8 - leftGroups.length - rightGroups.length
+  const groups = normalized.includes('::')
+    ? [...leftGroups, ...Array.from({ length: Math.max(0, missing) }, () => '0'), ...rightGroups]
+    : leftGroups
+  return groups.reduce((value, group) => (value << 16n) | BigInt(Number.parseInt(group || '0', 16)), 0n)
+}
+
+function isPrivateAddress(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [first, second] = address.split('.').map(Number)
+    const value = ipv4ToNumber(address)
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 100 && second! >= 64 && second! <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second! >= 16 && second! <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 192 && second === 0) ||
+      (first === 198 && second! >= 18 && second! <= 19) ||
+      (first === 198 && second === 51) ||
+      (first === 203 && second === 0 && address.split('.')[2] === '113') ||
+      value >= ipv4ToNumber('224.0.0.0')
+    )
+  }
+
+  if (isIP(address) !== 6) return true
+  const value = ipv6ToBigInt(address)
+  const ipv4Mapped = (value >> 32n) === 0xffffn
+  if (ipv4Mapped) {
+    const ipv4 = Number(value & 0xffffffffn)
+    return isPrivateAddress(
+      [ipv4 >>> 24, (ipv4 >>> 16) & 0xff, (ipv4 >>> 8) & 0xff, ipv4 & 0xff].join('.'),
+    )
+  }
+  return (
+    value === 0n ||
+    value === 1n ||
+    (value >> 121n) === 0x7en ||
+    (value >> 118n) === 0x3fan ||
+    (value >> 120n) === 0xffn
+  )
+}
+
+export async function assertSafeUrl(url: string): Promise<URL> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new ApiError('DOCUMENT_URL_INVALID', '链接格式不合法')
+  }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new ApiError('DOCUMENT_URL_INVALID', '只支持 http/https 链接')
   }
-
-  let response: Response
-  try {
-    response = await fetch(parsed, { signal: AbortSignal.timeout(config.urlImportTimeoutMs) })
-  } catch (error) {
-    throw new ApiError(
-      'DOCUMENT_URL_INVALID',
-      `链接抓取失败:${error instanceof Error ? error.message : String(error)}`,
-    )
+  if (parsed.username || parsed.password) {
+    throw new ApiError('DOCUMENT_URL_INVALID', '链接不能包含用户名或密码')
   }
-  if (!response.ok) {
-    throw new ApiError('DOCUMENT_URL_INVALID', `链接返回 ${response.status}`)
+  if (config.urlImportAllowPrivateNetworks) return parsed
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    throw new ApiError('DOCUMENT_URL_INVALID', '生产环境不能访问本机或内网地址')
+  }
+
+  let addresses: Array<{ address: string }>
+  try {
+    addresses = await dns.lookup(hostname, { all: true, verbatim: true })
+  } catch {
+    throw new ApiError('DOCUMENT_URL_INVALID', '链接域名无法解析')
+  }
+  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new ApiError('DOCUMENT_URL_INVALID', '生产环境不能访问本机或内网地址')
+  }
+  return parsed
+}
+
+/** 从 URL 抓取内容,受超时、大小、重定向和 SSRF 防护约束 */
+async function fetchUrlBuffer(url: string): Promise<{ buffer: Buffer; mimeType: string | null }> {
+  let current = url
+  let response: Response | undefined
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    const parsed = await assertSafeUrl(current)
+    try {
+      response = await fetch(parsed, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(config.urlImportTimeoutMs),
+      })
+    } catch (error) {
+      throw new ApiError(
+        'DOCUMENT_URL_INVALID',
+        `链接抓取失败:${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) break
+    const location = response.headers.get('location')
+    if (!location || redirectCount === 5) {
+      throw new ApiError('DOCUMENT_URL_INVALID', '链接重定向次数过多或缺少目标地址')
+    }
+    current = new URL(location, parsed).toString()
+  }
+  if (!response || !response.ok) {
+    throw new ApiError('DOCUMENT_URL_INVALID', `链接返回 ${response?.status ?? '未知状态'}`)
   }
 
   const declaredLength = Number.parseInt(response.headers.get('content-length') ?? '', 10)

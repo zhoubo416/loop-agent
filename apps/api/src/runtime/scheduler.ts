@@ -15,51 +15,58 @@ export async function processDueSchedules(db: Db = getDb(), limit = 10): Promise
   let fired = 0
 
   for (const schedule of due) {
-    const scheduledAt = schedule.next_run_at
-    if (!scheduledAt) continue
-    const scheduledDate = scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt)
+    const didFire = await db.transaction(async (tx) => {
+      // 重新读取并锁住当前 Schedule,避免多个 Scheduler 用同一份旧快照把 next_run_at 回拨。
+      const currentResult = await tx.query<ScheduleRow>(
+        'SELECT * FROM schedules WHERE id = $1 FOR UPDATE',
+        [schedule.id],
+      )
+      const current = currentResult.rows[0]
+      if (!current?.next_run_at) return false
+      const scheduledDate =
+        current.next_run_at instanceof Date ? current.next_run_at : new Date(current.next_run_at)
+      if (scheduledDate.getTime() > Date.now() || current.status !== 'active') return false
 
-    const project = await db.query<{ status: string }>('SELECT status FROM projects WHERE id = $1', [
-      schedule.project_id,
-    ])
-    if (project.rows[0]?.status !== 'active') {
-      // Project 已暂停或结束:不再唤醒 Agent,但时间要往前推,避免反复扫描同一条
-      await advanceSchedule(db, schedule, scheduledDate)
-      continue
-    }
+      const project = await tx.query<{ status: string }>('SELECT status FROM projects WHERE id = $1', [
+        current.project_id,
+      ])
+      if (project.rows[0]?.status !== 'active') {
+        // Project 已暂停或结束:不再唤醒 Agent,但时间要往前推,避免反复扫描同一条
+        await advanceSchedule(tx, current, scheduledDate)
+        return false
+      }
 
-    const claimed = await db.query<{ id: string }>(
-      `INSERT INTO schedule_occurrences (schedule_id, scheduled_at)
-       VALUES ($1, $2::timestamptz)
-       ON CONFLICT (schedule_id, scheduled_at) DO NOTHING
-       RETURNING id`,
-      [schedule.id, scheduledDate.toISOString()],
-    )
+      const claimed = await tx.query<{ id: string }>(
+        `INSERT INTO schedule_occurrences (schedule_id, scheduled_at)
+         VALUES ($1, $2::timestamptz)
+         ON CONFLICT (schedule_id, scheduled_at) DO NOTHING
+         RETURNING id`,
+        [current.id, scheduledDate.toISOString()],
+      )
 
-    if (claimed.rows.length === 0) {
-      await advanceSchedule(db, schedule, scheduledDate)
-      continue
-    }
+      if (claimed.rows.length === 0) {
+        // 兼容旧版本留下的 occurrence:推进窗口,但不重复创建 Run
+        await advanceSchedule(tx, current, scheduledDate)
+        return false
+      }
 
-    const instruction =
-      typeof schedule.payload?.instruction === 'string'
-        ? (schedule.payload.instruction as string)
-        : '定时检查项目状态:是否有需要关注的问题,是否有长期没有进展的行动。'
-
-    await db.transaction(async (tx) => {
+      const instruction =
+        typeof current.payload?.instruction === 'string'
+          ? (current.payload.instruction as string)
+          : '定时检查项目状态:是否有需要关注的问题,是否有长期没有进展的行动。'
       const observation = await insertObservation(tx, {
-        projectId: schedule.project_id,
+        projectId: current.project_id,
         type: 'schedule',
         content: instruction,
         source: 'scheduler',
-        metadata: { schedule_id: schedule.id, scheduled_at: scheduledDate.toISOString() },
+        metadata: { schedule_id: current.id, scheduled_at: scheduledDate.toISOString() },
       })
       const run = await insertRun(tx, {
-        projectId: schedule.project_id,
+        projectId: current.project_id,
         triggerType: 'schedule',
-        triggerId: schedule.id,
+        triggerId: current.id,
         inputContext: {
-          schedule_id: schedule.id,
+          schedule_id: current.id,
           scheduled_at: scheduledDate.toISOString(),
           instruction,
           observation_id: observation.id,
@@ -69,12 +76,13 @@ export async function processDueSchedules(db: Db = getDb(), limit = 10): Promise
         `UPDATE schedule_occurrences
          SET agent_run_id = $2, observation_id = $3
          WHERE schedule_id = $1 AND scheduled_at = $4::timestamptz`,
-        [schedule.id, run.id, observation.id, scheduledDate.toISOString()],
+        [current.id, run.id, observation.id, scheduledDate.toISOString()],
       )
-    })
 
-    await advanceSchedule(db, schedule, scheduledDate)
-    fired += 1
+      await advanceSchedule(tx, current, scheduledDate)
+      return true
+    })
+    if (didFire) fired += 1
   }
 
   return fired

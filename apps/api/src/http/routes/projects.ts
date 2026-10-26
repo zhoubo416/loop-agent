@@ -176,35 +176,37 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     const body = completionSchema.parse(request.body ?? {}) ?? {}
     const db = getDb()
 
-    let recommendation
-    if (body.recommendation_id) {
-      recommendation = await getRecommendation(db, projectId, body.recommendation_id)
-      if (recommendation.type !== 'completion') {
-        throw new ApiError('VALIDATION_ERROR', '指定的 Recommendation 不是完成建议')
+    return db.transaction(async (tx) => {
+      let recommendation
+      if (body.recommendation_id) {
+        recommendation = await getRecommendation(tx, projectId, body.recommendation_id)
+        if (recommendation.type !== 'completion') {
+          throw new ApiError('VALIDATION_ERROR', '指定的 Recommendation 不是完成建议')
+        }
+        if (recommendation.status !== 'pending') {
+          throw new ApiError('RECOMMENDATION_ALREADY_RESOLVED', '这条完成建议已经处理过')
+        }
+      } else {
+        const pending = await listRecommendations(tx, projectId, { status: 'pending' })
+        recommendation = pending.find((item) => item.type === 'completion') ?? null
       }
-      if (recommendation.status !== 'pending') {
-        throw new ApiError('RECOMMENDATION_ALREADY_RESOLVED', '这条完成建议已经处理过')
+      if (!recommendation) {
+        throw new ApiError('PROJECT_NOT_COMPLETABLE', '还没有 Agent 提出的完成建议,先让 Agent 判断项目是否接近完成')
       }
-    } else {
-      const pending = await listRecommendations(db, projectId, { status: 'pending' })
-      recommendation = pending.find((item) => item.type === 'completion') ?? null
-    }
-    if (!recommendation) {
-      throw new ApiError('PROJECT_NOT_COMPLETABLE', '还没有 Agent 提出的完成建议,先让 Agent 判断项目是否接近完成')
-    }
 
-    // 完成条件:没有已确认未完成的 Action,也没有开放问题
-    const [openActions, state] = await Promise.all([listOpenActions(db, projectId), getState(db, projectId)])
-    const openIssues = Array.isArray(state.open_issues) ? state.open_issues : []
-    if (openActions.length > 0 || openIssues.length > 0) {
-      throw new ApiError('PROJECT_NOT_COMPLETABLE', '还有未完成的 Action 或未解决的开放问题', {
-        open_actions: openActions.map((action) => action.title),
-        open_issues: openIssues,
-      })
-    }
+      // 完成条件:没有已确认未完成的 Action,也没有开放问题
+      const [openActions, state] = await Promise.all([listOpenActions(tx, projectId), getState(tx, projectId)])
+      const openIssues = Array.isArray(state.open_issues) ? state.open_issues : []
+      if (openActions.length > 0 || openIssues.length > 0) {
+        throw new ApiError('PROJECT_NOT_COMPLETABLE', '还有未完成的 Action 或未解决的开放问题', {
+          open_actions: openActions.map((action) => action.title),
+          open_issues: openIssues,
+        })
+      }
 
-    await resolveRecommendation(db, projectId, recommendation.id, 'executed')
-    return setProjectStatus(db, projectId, 'completed')
+      await resolveRecommendation(tx, projectId, recommendation.id, 'executed')
+      return setProjectStatus(tx, projectId, 'completed')
+    })
   })
 
   app.get('/api/v1/projects/:projectId/state', async (request) => {
@@ -244,7 +246,7 @@ export function registerProjectRoutes(app: FastifyInstance): void {
       const state = await getState(tx, projectId)
       const updated = await applyStateProposal(tx, projectId, proposal.proposal, {
         agentRunId: proposal.agent_run_id,
-        expectedVersion: state.version,
+        expectedVersion: proposal.expected_version,
         changedByType: 'user',
         changedById: user.id,
       })

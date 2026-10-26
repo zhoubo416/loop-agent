@@ -54,6 +54,9 @@ const tools: Tool[] = [
     async execute(args, ctx) {
       const title = String(args.title ?? '').trim()
       if (!title) throw new ApiError('VALIDATION_ERROR', 'create_action 需要 title')
+      if (args.executor_type === 'system') {
+        throw new ApiError('EXECUTOR_NOT_AVAILABLE', 'system executor 尚未配置,不能创建这类 Action')
+      }
       const action = await insertAction(ctx.db, {
         projectId: ctx.projectId,
         title,
@@ -121,6 +124,14 @@ export function createAgentToolContext(
     async execute(name, args) {
       const tool = tools.find((item) => item.name === name)
       if (!tool) throw new ApiError('VALIDATION_ERROR', `未知工具:${name}`)
+
+      const runStatus = await db.query<{ status: string }>(
+        'SELECT status FROM agent_runs WHERE id = $1',
+        [scope.runId],
+      )
+      if (runStatus.rows[0]?.status === 'cancelled') {
+        throw new ApiError('RUN_CONFLICT', 'Agent Run 已取消,不能继续调用工具')
+      }
 
       const inserted = await db.query<{ id: string }>(
         `INSERT INTO tool_calls (agent_run_id, tool_name, input, status)

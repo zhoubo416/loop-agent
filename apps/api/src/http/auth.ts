@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify'
 import { getDb } from '../db/client.js'
 import { ApiError } from './errors.js'
 import { resolveTokenUser } from '../modules/auth.js'
+import { config } from '../config.js'
 
 export interface CurrentUser {
   id: string
@@ -10,8 +11,8 @@ export interface CurrentUser {
 }
 
 /**
- * MVP 身份解析:所有业务接口都要求 X-User-Id,不再做无头请求回落。
- * 真正的登录体系不在 MVP 范围内,但 Project 级接口都会经过 project_users 校验。
+ * 身份解析优先使用 Bearer Token。X-User-Id 只为本地开发和测试保留,
+ * 生产环境必须关闭,避免客户端通过任意用户 ID 冒充身份。
  */
 export async function resolveUser(request: FastifyRequest): Promise<CurrentUser> {
   const authorization = request.headers.authorization
@@ -25,8 +26,11 @@ export async function resolveUser(request: FastifyRequest): Promise<CurrentUser>
   const header = request.headers['x-user-id']
   const raw = Array.isArray(header) ? header[0] : header
 
+  if (raw && !config.allowDevUserHeader) {
+    throw new ApiError('UNAUTHORIZED', '生产环境不接受 X-User-Id,请使用登录令牌')
+  }
   if (!raw) {
-    throw new ApiError('UNAUTHORIZED', '缺少 X-User-Id,无法确定身份')
+    throw new ApiError('UNAUTHORIZED', '缺少登录令牌,无法确定身份')
   }
 
   const db = getDb()

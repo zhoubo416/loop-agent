@@ -91,8 +91,15 @@ export async function resolveRecommendation(
     throw new ApiError('RECOMMENDATION_ALREADY_RESOLVED', 'Recommendation 已经处理过')
   }
   const result = await db.query<RecommendationRow>(
-    `UPDATE recommendations SET status = $2, resolved_at = now() WHERE id = $1 RETURNING *`,
-    [recommendationId, status],
+    `UPDATE recommendations
+     SET status = $3, resolved_at = now()
+     WHERE id = $1 AND project_id = $2 AND status = 'pending'
+     RETURNING *`,
+    [recommendationId, projectId, status],
   )
-  return result.rows[0]!
+  const resolved = result.rows[0]
+  if (!resolved) {
+    throw new ApiError('RECOMMENDATION_ALREADY_RESOLVED', 'Recommendation 已经处理过')
+  }
+  return resolved
 }

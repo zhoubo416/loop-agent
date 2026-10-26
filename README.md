@@ -108,7 +108,7 @@ docker compose up -d --build
 - 前端: http://127.0.0.1:3000
 - API: http://127.0.0.1:4000,浏览器直连,两个端口都要能访问到
 
-生产模式下开发登录接口已关闭,首次使用在前端登录页注册账号,之后用邮箱密码登录。
+生产模式下开发登录接口和 `X-User-Id` 身份回落都已关闭,首次使用在前端登录页注册账号,之后用邮箱密码登录。
 
 ### 2. 配置
 
@@ -117,6 +117,8 @@ compose 会自动读取仓库根目录 `.env` 里的 `AGENT_ENGINE_*` 配置,与
 | 环境变量 | 说明 |
 | --- | --- |
 | `NUXT_PUBLIC_API_BASE` | 浏览器访问 API 的地址。默认 `http://127.0.0.1:4000/api/v1` 只适合浏览器和容器在同一台机器;部署到服务器、从其他设备访问时必须改成 `http://<服务器IP或域名>:4000/api/v1` |
+| `CORS_ORIGIN` | 允许访问 API 的控制台 Origin。生产环境必须配置,例如 `https://loop.example.com`;多个来源用逗号分隔 |
+| `URL_IMPORT_ALLOW_PRIVATE_NETWORKS` | 是否允许 URL 导入访问本机和内网地址。默认关闭,仅本地测试等明确场景临时开启 |
 | `AGENT_ENGINE_BASE_URL` / `AGENT_ENGINE_API_KEY` / `AGENT_ENGINE_MODEL` | Agent 服务配置,从根目录 `.env` 读取 |
 | `DATABASE_URL` | 默认不配,使用容器内嵌 PGlite。要接外部 PostgreSQL 时在 compose 里显式配置,文件里有注释示例。注意 compose 不会透传 `.env` 里的 `DATABASE_URL`:那是本地开发机器上的库,容器大概率访问不到 |
 | `TENCENT_MEETING_TOKEN_ENCRYPTION_KEY` | 使用腾讯会议导入功能时需要 |

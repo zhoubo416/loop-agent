@@ -7,6 +7,7 @@ export interface StateProposalRow extends Row {
   project_id: string
   agent_run_id: string | null
   proposal: StateProposal
+  expected_version: number
   status: 'pending' | 'applied' | 'rejected' | 'expired'
   created_at: Date | string
   resolved_at: Date | string | null
@@ -17,12 +18,13 @@ export async function insertStateProposal(
   projectId: string,
   proposal: StateProposal,
   agentRunId: string | null,
+  expectedVersion: number,
 ): Promise<StateProposalRow> {
   const result = await db.query<StateProposalRow>(
-    `INSERT INTO state_proposals (project_id, agent_run_id, proposal, status)
-     VALUES ($1, $2, $3::jsonb, 'pending')
+    `INSERT INTO state_proposals (project_id, agent_run_id, proposal, expected_version, status)
+     VALUES ($1, $2, $3::jsonb, $4, 'pending')
      RETURNING *`,
-    [projectId, agentRunId, JSON.stringify(proposal)],
+    [projectId, agentRunId, JSON.stringify(proposal), expectedVersion],
   )
   return result.rows[0]!
 }
@@ -71,8 +73,13 @@ export async function resolveStateProposal(
     throw new ApiError('STATE_CONFLICT', 'State Proposal 已经处理过')
   }
   const result = await db.query<StateProposalRow>(
-    `UPDATE state_proposals SET status = $2, resolved_at = now() WHERE id = $1 RETURNING *`,
-    [proposalId, status],
+    `UPDATE state_proposals
+     SET status = $3, resolved_at = now()
+     WHERE id = $1 AND project_id = $2 AND status = 'pending'
+     RETURNING *`,
+    [proposalId, projectId, status],
   )
-  return result.rows[0]!
+  const resolved = result.rows[0]
+  if (!resolved) throw new ApiError('STATE_CONFLICT', 'State Proposal 已经处理过')
+  return resolved
 }

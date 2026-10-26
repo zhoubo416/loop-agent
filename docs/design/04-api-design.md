@@ -1444,6 +1444,7 @@ OBSERVATION_NOT_FOUND
 ACTION_NOT_FOUND
 ACTION_INVALID_STATE
 ACTION_ALREADY_COMPLETED
+EXECUTOR_NOT_AVAILABLE
 
 RECOMMENDATION_NOT_FOUND
 RECOMMENDATION_ALREADY_RESOLVED
@@ -1870,6 +1871,7 @@ POST   /api/v1/dev-login
 - `POST /projects/{project_id}/archive` 把 Project 置为 `archived`，之后不再接受新的触发。
 - `GET /notifications`、`POST /notifications/{id}/read`、`POST /notifications/read-all` 提供跨 Project 的通知列表与已读操作，`GET /notifications/unread-count` 返回未读数。列表、未读数和 read-all 都接受 `project_id`（read-all 放在请求体里）：带上它就把范围收窄到这一个 Project，未读数也只算这一个，不带就是当前用户所有 Project。收窄仍然建立在成员校验之上，自己没参与的 Project 拿不到任何通知。
 - Action 带 `kind`（task / meeting / document），`POST /actions` 创建时指定；`POST /actions/{id}/complete` 的 `result.output` 接收该类型对应的结构化字段（会议：participants/decisions/action_items，资料：key_points/content，任务：results/blockers），Runtime 会把结构化结果整理进 Observation。
+- 当前没有配置 `system` executor 的系统工具；`POST /actions` 传 `executor_type=system` 返回 `EXECUTOR_NOT_AVAILABLE`，Agent 输出里的同类 Action 会被跳过并记录在 Run 的持久化元数据中。`agent` executor 只支持由 Agent Run 关联已有 Action 的完成路径。
 - `GET /projects/{project_id}/actions/{action_id}` 额外返回 `source`（来源事件、建议、触发观察与智能体判断）和 `analysis`（该 Action 完成后智能体后续运行的分析结论），供详情页展示“为什么产生这个 Action”和“执行之后智能体怎么看”。
 
 资料（kind=document）行动的文档与整理接口：
@@ -1883,7 +1885,7 @@ POST   /api/v1/projects/{project_id}/actions/{action_id}/organize
 ```
 
 - `POST /documents/upload` 是 multipart 请求，字段名 `files`，支持一次多文件；单文件大小上限 `UPLOAD_MAX_BYTES`（默认 25MB），一次最多 10 个，任何一个文件超限整个请求失败、不留下部分结果。服务端同步提取文本入库，响应 `201 { items }`。
-- `POST /documents/import-url` 接收 `{ url, name? }`，只支持 http/https 直链，抓取受超时与大小上限约束；导入后只保存元数据与提取文本，不保存字节。
+- `POST /documents/import-url` 接收 `{ url, name? }`，只支持 http/https 直链，抓取受超时、大小和重定向上限约束；默认会解析域名并拒绝 localhost、内网、保留地址及重定向到这些地址，只有明确设置 `URL_IMPORT_ALLOW_PRIVATE_NETWORKS=true` 才允许本地测试目标，导入后只保存元数据与提取文本，不保存字节。
 - `GET /documents/{document_id}/file` 只对 upload 来源有效，校验项目访问后流式返回文件字节（inline）。URL 来源没有本地文件，前端直接用原链接预览。
 - 文档元数据列表随 `GET /actions/{action_id}` 的 `documents` 字段返回（名称、来源、大小、`parse_status`、`extracted_chars`、解析错误），不带全文。
 - 上传、导入和删除只在行动处于 `pending` / `running` 时开放；完成后文档定稿，仍然可见可预览，但不再允许增删。
@@ -1918,7 +1920,7 @@ POST   /api/v1/auth/logout
 GET    /api/v1/auth/me
 ```
 
-注册和登录返回一个不透明访问令牌，之后所有业务接口用 `Authorization: Bearer <token>` 携带身份；`X-User-Id` 仅作为开发环境的兜底保留。令牌用 sha256 摘要存库，有效期 30 天。
+注册和登录返回一个不透明访问令牌，之后所有业务接口用 `Authorization: Bearer <token>` 携带身份；`X-User-Id` 仅作为开发环境的兜底保留，生产环境拒绝该请求头。生产 CORS 必须通过 `CORS_ORIGIN` 显式配置，不能自动放开任意来源。令牌用 sha256 摘要存库，有效期 30 天。
 
 另外，Run 记录里的 `error.code` 取值来自第 38 节的错误码和 Agent Engine 的错误码（`ENGINE_TIMEOUT`、`ENGINE_INVALID_OUTPUT` 等），前端可以直接按错误码判断是否需要重试。
 
@@ -1987,6 +1989,7 @@ Run Agent
 
 - 2026-10-26：`GET /projects/{project_id}/actions` 按 `kind` 返回列表摘要：会议带导入的会议时间、参会人和结论，资料带文档数量、文件名、解析状态和字数，会议与资料都带最近一次完成结果的摘要。
 - 2026-10-26：`GET /projects/{project_id}/actions` 增加 `kind` 查询参数，任务、会议、资料库三个列表各自只取自己这一类行动；Overview 的 `active_actions` 与 `proposed_actions` 补上 `kind`，首页链接能跳到对应类型的详情页。
+- 2026-10-20：生产环境关闭 `X-User-Id` 身份回落并要求显式 CORS 来源；URL 导入增加生产 SSRF 防护；Recommendation 接受与 Project 完成确认改为原子事务；未配置的 `system` executor 返回明确错误。
 - 2026-10-19：第 47 节会议导入快照增加 `summary`（会议结论）；会议详情页只提交参与人和纪要，决定与后续行动不再单独提交，内容随纪要进入 Observation。
 - 2026-10-18：第 47 节 `meeting-import` 请求体补充可选 `started_at` / `ended_at`，周期会议用它定位到选中的那一场实例。
 - 2026-10-18：第 47 节新增腾讯会议集成接口：个人 Token 绑定/解绑/状态、已结束会议列表、会议内容导入；Action 详情响应增加 `meeting_import`，逐字稿只存快照不进入 Observation。第 38 节补充 `INTEGRATION_*` 与 `MEETING_*` 错误码。

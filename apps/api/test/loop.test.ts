@@ -12,6 +12,7 @@ process.env.PGDATA_DIR = dataDir
 process.env.UPLOAD_DIR = path.resolve(dataDir, 'uploads')
 delete process.env.DATABASE_URL
 process.env.WORKER_ENABLED = 'false'
+process.env.URL_IMPORT_ALLOW_PRIVATE_NETWORKS = 'true'
 
 const { buildServer } = await import('../src/http/server.js')
 const { getDb, closeDb } = await import('../src/db/client.js')

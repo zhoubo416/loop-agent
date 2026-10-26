@@ -6,7 +6,7 @@ import { buildAgentInput } from '../agent/context-builder.js'
 import { parseAgentOutput } from '../agent/output-validator.js'
 import { completeRun, failRun, getRunById, requeueRun } from '../modules/runs.js'
 import { ApiError } from '../http/errors.js'
-import { processAgentOutput } from './output-processor.js'
+import { processAgentOutputInTx } from './output-processor.js'
 import { createAgentToolContext } from '../tools/registry.js'
 import { generateNotifications } from './notify.js'
 
@@ -26,20 +26,34 @@ export async function executeAgentRun(runId: string): Promise<RunOutcome> {
   const run = await getRunById(db, runId)
   if (!run) return { runId, status: 'skipped', detail: 'Agent Run 不存在' }
 
+  if (run.status === 'cancelled') {
+    return { runId, status: 'skipped', detail: 'Agent Run 已取消' }
+  }
+
   const project = await db.query<{ status: string }>('SELECT status FROM projects WHERE id = $1', [
     run.project_id,
   ])
   const projectStatus = project.rows[0]?.status
   if (projectStatus === 'paused' || projectStatus === 'completed' || projectStatus === 'archived') {
-    await failRun(db, run.id, {
+    const current = await getRunById(db, run.id)
+    if (current?.status === 'cancelled') {
+      return { runId, status: 'skipped', detail: 'Agent Run 已取消' }
+    }
+    const failed = await failRun(db, run.id, {
       code: 'PROJECT_NOT_RUNNABLE',
       message: `Project 当前状态为 ${projectStatus},不执行 Agent Run`,
     })
-    return { runId, status: 'failed', detail: `Project 状态 ${projectStatus}` }
+    return failed
+      ? { runId, status: 'failed', detail: `Project 状态 ${projectStatus}` }
+      : { runId, status: 'skipped', detail: 'Agent Run 已结束' }
   }
 
   const engine = getEngine()
   try {
+    const current = await getRunById(db, run.id)
+    if (current?.status === 'cancelled') {
+      return { runId, status: 'skipped', detail: 'Agent Run 已取消' }
+    }
     const input = await buildAgentInput(db, run)
     await db.query('UPDATE agent_runs SET input_context = $2::jsonb WHERE id = $1', [
       run.id,
@@ -52,22 +66,31 @@ export async function executeAgentRun(runId: string): Promise<RunOutcome> {
     })
     const rawOutput = await engine.run(input, toolContext)
     const { output, warnings } = parseAgentOutput(rawOutput)
-    const result = await processAgentOutput(db, run, output)
-    await generateNotifications(db, run.project_id, result)
-
-    await completeRun(db, run.id, {
-      judgment: output.judgment ?? null,
-      state_proposal: output.stateProposal ?? null,
-      events: output.events ?? [],
-      actions: output.actions ?? [],
-      recommendations: output.recommendations ?? [],
-      memories: output.memories ?? [],
-      _meta: {
-        engine: engine.name,
-        warnings,
-        persisted: result,
-      },
+    const beforePersist = await getRunById(db, run.id)
+    if (beforePersist?.status === 'cancelled') {
+      return { runId, status: 'skipped', detail: 'Agent Run 已取消' }
+    }
+    const completed = await db.transaction(async (tx) => {
+      const result = await processAgentOutputInTx(tx, run, output)
+      const didComplete = await completeRun(tx, run.id, {
+        judgment: output.judgment ?? null,
+        state_proposal: output.stateProposal ?? null,
+        events: output.events ?? [],
+        actions: output.actions ?? [],
+        recommendations: output.recommendations ?? [],
+        memories: output.memories ?? [],
+        _meta: {
+          engine: engine.name,
+          warnings,
+          persisted: result,
+        },
+      })
+      if (!didComplete) throw new Error('Agent Run 在落库前已取消')
+      await generateNotifications(tx, run.project_id, result)
+      return true
     })
+
+    if (!completed) return { runId, status: 'skipped', detail: 'Agent Run 在落库前已取消' }
 
     return { runId, status: 'completed' }
   } catch (error) {
@@ -81,6 +104,10 @@ async function handleRunFailure(
   error: unknown,
 ): Promise<RunOutcome> {
   const db = getDb()
+  const current = await getRunById(db, runId)
+  if (current?.status === 'cancelled') {
+    return { runId, status: 'skipped', detail: 'Agent Run 已取消' }
+  }
   const retryable =
     (error instanceof AgentEngineError && error.retryable) ||
     (error instanceof ApiError && error.code === 'STATE_CONFLICT')

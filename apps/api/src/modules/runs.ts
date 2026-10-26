@@ -122,24 +122,28 @@ export async function completeRun(
   db: Db,
   runId: string,
   output: Record<string, unknown>,
-): Promise<void> {
-  await db.query(
+): Promise<boolean> {
+  const result = await db.query(
     `UPDATE agent_runs
      SET status = 'completed', output = $2::jsonb, completed_at = now(), error = NULL
-     WHERE id = $1`,
+     WHERE id = $1 AND status = 'running'`,
     [runId, JSON.stringify(output)],
   )
+  return result.rowCount > 0
 }
 
 export async function failRun(
   db: Db,
   runId: string,
   error: Record<string, unknown>,
-): Promise<void> {
-  await db.query(
-    `UPDATE agent_runs SET status = 'failed', error = $2::jsonb, completed_at = now() WHERE id = $1`,
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE agent_runs
+     SET status = 'failed', error = $2::jsonb, completed_at = now()
+     WHERE id = $1 AND status = 'running'`,
     [runId, JSON.stringify(error)],
   )
+  return result.rowCount > 0
 }
 
 export async function requeueRun(db: Db, runId: string): Promise<void> {
@@ -151,14 +155,19 @@ export async function requeueRun(db: Db, runId: string): Promise<void> {
 
 export async function cancelRun(db: Db, projectId: string, runId: string): Promise<AgentRunRow> {
   const run = await getRun(db, projectId, runId)
-  if (run.status === 'completed' || run.status === 'failed') {
+  if (!['pending', 'running'].includes(run.status)) {
     throw new ApiError('RUN_CONFLICT', 'Agent Run 已经结束,无法取消')
   }
   const result = await db.query<AgentRunRow>(
-    `UPDATE agent_runs SET status = 'cancelled', completed_at = now() WHERE id = $1 RETURNING *`,
-    [runId],
+    `UPDATE agent_runs
+     SET status = 'cancelled', completed_at = now()
+     WHERE id = $1 AND project_id = $2 AND status IN ('pending', 'running')
+     RETURNING *`,
+    [runId, projectId],
   )
-  return result.rows[0]!
+  const cancelled = result.rows[0]
+  if (!cancelled) throw new ApiError('RUN_CONFLICT', 'Agent Run 已经结束,无法取消')
+  return cancelled
 }
 
 /**
@@ -177,6 +186,22 @@ export async function claimNextRun(db: Db): Promise<AgentRunRow | undefined> {
        FOR UPDATE SKIP LOCKED
      )
      RETURNING *`,
+  )
+  return result.rows[0]
+}
+
+/** 同步等待路径按指定 Run 认领,不能绕过正常的 running/attempts 状态变化。 */
+export async function claimRunById(
+  db: Db,
+  projectId: string,
+  runId: string,
+): Promise<AgentRunRow | undefined> {
+  const result = await db.query<AgentRunRow>(
+    `UPDATE agent_runs
+     SET status = 'running', started_at = now(), attempts = attempts + 1
+     WHERE id = $1 AND project_id = $2 AND status = 'pending'
+     RETURNING *`,
+    [runId, projectId],
   )
   return result.rows[0]
 }
@@ -207,11 +232,54 @@ export async function releaseProjectLock(
   db: Db,
   projectId: string,
   holder: string,
+  agentRunId?: string,
 ): Promise<void> {
-  await db.query('DELETE FROM project_locks WHERE project_id = $1 AND holder = $2', [
-    projectId,
-    holder,
-  ])
+  const params: unknown[] = [projectId, holder]
+  const runCondition = agentRunId ? ' AND agent_run_id = $3' : ''
+  if (agentRunId) params.push(agentRunId)
+  await db.query(
+    `DELETE FROM project_locks WHERE project_id = $1 AND holder = $2${runCondition}`,
+    params,
+  )
+}
+
+/** Worker 重启后回收已经失去 Project 锁的 running Run。 */
+export async function recoverStaleRuns(db: Db, staleAfterMs: number): Promise<number> {
+  const result = await db.query(
+    `UPDATE agent_runs AS r
+     SET status = 'pending',
+         started_at = NULL,
+         error = jsonb_build_object(
+           'code', 'RUN_RECOVERED',
+           'message', 'Worker 重启后回收未完成的 Agent Run'
+         )
+     WHERE r.status = 'running'
+       AND (r.started_at IS NULL OR r.started_at < now() - ($1 || ' milliseconds')::interval)
+       AND NOT EXISTS (
+         SELECT 1 FROM project_locks AS l
+         WHERE l.agent_run_id = r.id AND l.expires_at > now()
+       )`,
+    [String(staleAfterMs)],
+  )
+  return result.rowCount
+}
+
+/** 执行期间续租 Project 锁,避免合法的长 Run 被恢复器误判为崩溃。 */
+export async function renewProjectLock(
+  db: Db,
+  projectId: string,
+  holder: string,
+  agentRunId: string,
+  ttlMs: number,
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE project_locks
+     SET acquired_at = now(), expires_at = now() + ($4 || ' milliseconds')::interval
+     WHERE project_id = $1 AND holder = $2 AND agent_run_id = $3
+     RETURNING project_id`,
+    [projectId, holder, agentRunId, String(ttlMs)],
+  )
+  return result.rowCount > 0
 }
 
 export async function listProjectLocks(db: Db, projectId: string) {

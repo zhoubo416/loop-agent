@@ -37,6 +37,13 @@ export interface CreateActionInput {
   kind?: ActionKind
 }
 
+/** 当前 Runtime 没有安全的 system executor,避免创建一个永远不会执行的 Action。 */
+export function assertActionExecutorSupported(executorType: string): void {
+  if (executorType === 'system') {
+    throw new ApiError('EXECUTOR_NOT_AVAILABLE', 'system executor 尚未配置,暂时不能创建这类 Action')
+  }
+}
+
 export async function insertAction(db: Db, input: CreateActionInput): Promise<ActionRow> {
   const result = await db.query<ActionRow>(
     `INSERT INTO actions

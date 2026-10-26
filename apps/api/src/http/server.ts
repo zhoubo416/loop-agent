@@ -18,7 +18,7 @@ export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: false, trustProxy: true })
 
   void app.register(cors, {
-    origin: true,
+    origin: config.corsOrigin,
     allowedHeaders: ['content-type', 'x-user-id', 'idempotency-key', 'authorization'],
     exposedHeaders: ['idempotency-key'],
   })

@@ -3,7 +3,7 @@ import type { AgentRunRow } from '../modules/runs.js'
 import { listOpenActions, type ActionRow } from '../modules/actions.js'
 import { listEvents } from '../modules/events.js'
 import { listRecentExecutions } from '../modules/executions.js'
-import { listMemories } from '../modules/memories.js'
+import { retrieveMemories } from '../modules/memories.js'
 import { listObservations } from '../modules/observations.js'
 import { listMessages } from '../modules/sessions.js'
 import { getState } from '../modules/states.js'
@@ -44,13 +44,24 @@ export async function buildAgentInput(db: Db, run: AgentRunRow): Promise<AgentIn
   if (!project) throw new ApiError('PROJECT_NOT_FOUND', 'Project 不存在')
 
   const state = await getState(db, run.project_id)
-  const [observations, events, activeActions, recentExecutions, memories] = await Promise.all([
+  const [observations, events, activeActions, recentExecutions] = await Promise.all([
     listObservations(db, run.project_id, { limit: 10 }),
     listEvents(db, run.project_id, { limit: 10 }),
     listOpenActions(db, run.project_id),
     listRecentExecutions(db, run.project_id, 5),
-    listMemories(db, run.project_id, { status: 'active', limit: 10 }),
   ])
+
+  const memoryQuery = [
+    project.objective,
+    state.current_situation,
+    ...asStringArray(state.open_issues).map(String),
+    ...observations.slice(0, 3).map((row) => row.content),
+    ...events.slice(0, 3).map((row) => `${row.title} ${row.content}`),
+    ...Object.values(run.input_context ?? {}).filter((value): value is string => typeof value === 'string'),
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const memories = await retrieveMemories(db, run.project_id, memoryQuery, 10)
 
   const triggerPayload = { ...(run.input_context ?? {}) } as Record<string, unknown>
   if (run.trigger_id) triggerPayload.trigger_id = run.trigger_id

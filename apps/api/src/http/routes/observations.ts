@@ -8,7 +8,7 @@ import { cancelRun, getRun, listRuns } from '../../modules/runs.js'
 import { insertEvent, getEvent, listEvents } from '../../modules/events.js'
 import { withIdempotency } from '../../modules/idempotency.js'
 import { createManualRun, submitObservation } from '../../runtime/trigger.js'
-import { executeAgentRun } from '../../runtime/agent-runner.js'
+import { RuntimeWorker } from '../../runtime/worker.js'
 import { triggerEventSchedules } from '../../runtime/scheduler.js'
 
 const observationSchema = z.object({
@@ -138,7 +138,7 @@ export function registerObservationRoutes(app: FastifyInstance): void {
     })
 
     if (body.wait) {
-      const outcome = await executeAgentRun(run.id)
+      const outcome = await new RuntimeWorker(`http-${process.pid}`).executeNow(projectId, run.id)
       const finished = await getRun(getDb(), projectId, run.id)
       return { ...finished, outcome: outcome.status, detail: outcome.detail ?? null }
     }

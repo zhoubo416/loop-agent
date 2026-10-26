@@ -1953,6 +1953,7 @@ state_proposals
 | project_id | uuid | NO | - | Project |
 | agent_run_id | uuid | YES | - | 提出变更的 Agent Run |
 | proposal | jsonb | NO | '{}' | 待确认的 State 变更 |
+| expected_version | integer | NO | - | 创建提案时看到的 State 版本 |
 | status | varchar(20) | NO | 'pending' | 状态 |
 | created_at | timestamptz | NO | now() | 创建时间 |
 | resolved_at | timestamptz | YES | - | 处理时间 |
@@ -1969,6 +1970,8 @@ Agent 的 `state_proposal` 拆成两部分处理：
 - `current_stage`、`open_issues`、`risks`、`unknowns` 属于改变阶段或结构，先写进本表，用户 apply 后才写入 `agent_states` 并生成 `agent_state_versions`。
 
 这样“LLM 只提议、用户确认后 Runtime 才落库”的原则，对 State 这条路径也成立了。
+
+用户应用提案时必须使用 `expected_version` 做乐观锁校验。提案创建后如果 State 已经发生变化，应用会返回 `STATE_CONFLICT`，不会用旧提案覆盖新状态。
 
 ---
 
@@ -2154,6 +2157,7 @@ Schedule
 
 ## 修改历史
 
+- 2026-10-20：`state_proposals` 增加 `expected_version`，记录提案创建时的 State 版本，应用时拒绝过期提案；Schedule 占位、Observation、Run 与窗口推进改为同一事务。
 - 2026-10-19：第 42 节 `action_meeting_imports` 增加 `summary`（会议结论）；会议表单不再单独提交决定和后续行动，内容留在纪要正文里，`todos` 仍作为原始数据保留。
 - 2026-10-18：新增第 42 节腾讯会议集成，重新引入 `user_integrations` 与 `action_meeting_imports` 两张表；个人 Token 加密保存，会议导入快照与 Execution 分工，逐字稿不进入 Observation。
 - 2026-10-16：第 11 节补上 `session_messages.seq` 字段与 `UNIQUE(session_id, seq)` 约束（0012），说明它为什么必须唯一。
