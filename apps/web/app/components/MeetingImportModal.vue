@@ -8,14 +8,19 @@ import type {
 
 const props = defineProps<{
   projectId: string
-  actionId: string
+  /** import 模式必须有行动 ID;select 模式只挑会议,由调用方创建记录 */
+  actionId?: string
+  mode?: 'import' | 'select'
 }>()
 
 const open = defineModel<boolean>('open', { default: false })
 
 const emit = defineEmits<{
   imported: [snapshot: MeetingImportSnapshot]
+  select: [meeting: TencentMeetingListItem]
 }>()
+
+const isSelect = computed(() => props.mode === 'select')
 
 const api = useApi()
 
@@ -126,6 +131,15 @@ async function readMeeting(meeting: TencentMeetingListItem) {
   if (readingKey.value) return
   const identifier = meetingIdentifier(meeting)
   if (!identifier) return
+
+  // 只挑选会议时不用先写快照,交给调用方创建记录后再导入
+  if (isSelect.value) {
+    emit('select', meeting)
+    open.value = false
+    return
+  }
+
+  if (!props.actionId) return
   readingKey.value = meetingKey(meeting)
   previewError.value = ''
   preview.value = null
@@ -164,15 +178,20 @@ function confirmImport() {
   open.value = false
 }
 
-watch(open, (value) => {
-  if (!value) return
-  resetRange()
-  preview.value = null
-  previewError.value = ''
-  showTranscript.value = false
-  forceRebind.value = false
-  void loadStatus()
-})
+// 列表里的导入弹窗是打开时才挂载的,初始值也要走一遍加载
+watch(
+  open,
+  (value) => {
+    if (!value) return
+    resetRange()
+    preview.value = null
+    previewError.value = ''
+    showTranscript.value = false
+    forceRebind.value = false
+    void loadStatus()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -201,6 +220,14 @@ watch(open, (value) => {
           />
 
           <template v-else>
+            <UAlert
+              v-if="isSelect"
+              color="info"
+              variant="soft"
+              icon="i-lucide-info"
+              title="选一场已结束的会议，会用它创建会议记录并导入纪要、参会人和逐字稿。"
+            />
+
             <div class="flex flex-wrap items-end gap-2">
               <UFormField label="从">
                 <UInput v-model="fromDate" type="date" class="w-40" />
@@ -229,7 +256,7 @@ watch(open, (value) => {
                 variant="outline"
                 block
                 class="justify-start py-3 text-left"
-                :loading="readingKey === meetingKey(meeting)"
+                :loading="!isSelect && readingKey === meetingKey(meeting)"
                 :disabled="readingKey !== null || !meetingIdentifier(meeting)"
                 @click="readMeeting(meeting)"
               >
@@ -253,7 +280,7 @@ watch(open, (value) => {
               </UButton>
             </div>
 
-            <div v-if="preview" class="rounded-lg border border-default p-3">
+            <div v-if="preview && !isSelect" class="rounded-lg border border-default p-3">
               <div class="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <p class="font-medium">{{ preview.meeting_title ?? '未命名会议' }}</p>
@@ -306,7 +333,7 @@ watch(open, (value) => {
 
     <template #footer>
       <UButton color="neutral" variant="ghost" @click="open = false">关闭</UButton>
-      <UButton v-if="preview" @click="confirmImport">导入到会议记录</UButton>
+      <UButton v-if="preview && !isSelect" @click="confirmImport">导入到会议记录</UButton>
     </template>
   </UModal>
 </template>

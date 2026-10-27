@@ -26,6 +26,60 @@ body {
   }
 }
 
+/* 行动详情页整页滚动:桌面端右侧信息栏吸顶,窄屏上下堆叠 */
+.lo-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 20px;
+}
+
+.lo-detail-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 1280px 以上才分两栏;侧边栏占 264px,再窄会挤到主卡片 */
+@media (min-width: 1280px) {
+  .lo-detail-body {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 28px;
+  }
+
+  .lo-detail-main {
+    flex: 1;
+  }
+
+  /* 右栏内容短时吸顶,内容长时自己滚动。
+     留 2px 内边距,卡片 1px 的外描边才不会被滚动容器和滚动条盖住 */
+  .lo-detail-rail {
+    width: 20rem;
+    flex: none;
+    align-self: flex-start;
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 48px);
+    padding: 2px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (min-width: 1360px) {
+  .lo-detail-rail {
+    width: 22rem;
+  }
+}
+
+@media (max-width: 1279px) {
+  .lo-detail-body {
+    padding-top: 16px;
+  }
+}
+
 .lo-sidebar {
   /* 页面滚动时侧边栏保持可见;项目多时自己纵向滚动 */
   position: sticky;
@@ -107,6 +161,7 @@ body {
 /* AI 回复的 Markdown 排版 */
 .lo-md {
   line-height: 1.7;
+  overflow-wrap: break-word;
 }
 
 .lo-md > :first-child {

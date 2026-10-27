@@ -12,6 +12,13 @@ export function formatDateTime(value?: string | null): string {
   }).format(date)
 }
 
+/** 智能体常把标题和描述写成同一段话,去掉多余空白后比较,避免同一段内容展示多遍 */
+export function isSameText(left?: string | null, right?: string | null): boolean {
+  const normalize = (value?: string | null) => (value ?? '').replace(/\s+/g, ' ').trim()
+  const normalizedLeft = normalize(left)
+  return Boolean(normalizedLeft) && normalizedLeft === normalize(right)
+}
+
 /** 文件大小的人话显示,文档列表用 */
 export function formatSize(value?: number | string | null): string {
   const size = typeof value === 'string' ? Number.parseInt(value, 10) : value
@@ -27,6 +34,19 @@ export function localInputToIso(value?: string | null): string | null {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
   return date.toISOString()
+}
+
+/** 会议时长的人话显示,开始或结束时间缺失时返回空字符串 */
+export function formatDuration(startedAt?: string | null, endedAt?: string | null): string {
+  if (!startedAt || !endedAt) return ''
+  const start = new Date(startedAt).getTime()
+  const end = new Date(endedAt).getTime()
+  const minutes = Math.round((end - start) / 60000)
+  if (!Number.isFinite(minutes) || minutes <= 0) return ''
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`
 }
 
 export const statusLabels: Record<string, string> = {
@@ -106,6 +126,7 @@ export function statusColor(status?: string | null): UiColor {
     case 'pending':
     case 'created':
     case 'paused':
+    case 'proposed':
       return 'warning'
     case 'failed':
     case 'cancelled':

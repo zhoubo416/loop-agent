@@ -50,7 +50,24 @@ export function formatMeetingRange(
   endedAt?: string | null,
 ): string {
   if (!startedAt && !endedAt) return '时间未知'
-  if (startedAt && endedAt) return `${formatDateTime(startedAt)} 至 ${formatDateTime(endedAt)}`
+  if (startedAt && endedAt) {
+    const start = new Date(startedAt)
+    const end = new Date(endedAt)
+    const valid = !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())
+    if (
+      valid &&
+      start.getFullYear() === end.getFullYear() &&
+      start.getMonth() === end.getMonth() &&
+      start.getDate() === end.getDate()
+    ) {
+      const clock = new Intl.DateTimeFormat('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(end)
+      return `${formatDateTime(startedAt)} 至 ${clock}`
+    }
+    return `${formatDateTime(startedAt)} 至 ${formatDateTime(endedAt)}`
+  }
   return formatDateTime(startedAt ?? endedAt)
 }
 

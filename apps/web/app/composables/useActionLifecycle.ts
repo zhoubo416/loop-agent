@@ -1,9 +1,15 @@
 import type { Ref } from 'vue'
 
+export interface ActionLifecycleOptions {
+  /** 取消前是否弹浏览器确认,页面自己有确认弹窗时传 false */
+  confirmCancel?: boolean
+}
+
 export function useActionLifecycle(
   projectId: Ref<string>,
   actionId: Ref<string>,
   refresh: () => Promise<unknown>,
+  options: ActionLifecycleOptions = {},
 ) {
   const api = useApi()
   const { waitForRun } = useRunWaiter()
@@ -15,7 +21,7 @@ export function useActionLifecycle(
     if (busy.value) return
     busy.value = true
     error.value = ''
-    notice.value = 'Agent 正在根据这个结果继续推进…'
+    notice.value = '智能体正在根据这个结果继续推进…'
     try {
       const result = await api.post<{ agent_run_id: string | null }>(
         `/projects/${projectId.value}/actions/${actionId.value}/complete`,
@@ -36,6 +42,7 @@ export function useActionLifecycle(
     if (busy.value) return
     busy.value = true
     error.value = ''
+    notice.value = '智能体正在根据这个结果继续推进…'
     try {
       const result = await api.post<{ agent_run_id: string | null }>(
         `/projects/${projectId.value}/actions/${actionId.value}/fail`,
@@ -43,8 +50,10 @@ export function useActionLifecycle(
       )
       if (result.agent_run_id) await waitForRun(projectId.value, result.agent_run_id)
       await refresh()
+      notice.value = ''
     } catch (caught) {
       error.value = (caught as Error).message
+      notice.value = ''
     } finally {
       busy.value = false
     }
@@ -52,14 +61,17 @@ export function useActionLifecycle(
 
   async function cancel(reason?: string) {
     if (busy.value) return
-    if (!window.confirm('确认取消这个 Action?')) return
+    if (options.confirmCancel !== false && !window.confirm('确认取消这个 Action?')) return
     busy.value = true
     error.value = ''
+    notice.value = '智能体正在根据这个结果继续推进…'
     try {
       await api.post(`/projects/${projectId.value}/actions/${actionId.value}/cancel`, { reason })
       await refresh()
+      notice.value = ''
     } catch (caught) {
       error.value = (caught as Error).message
+      notice.value = ''
     } finally {
       busy.value = false
     }

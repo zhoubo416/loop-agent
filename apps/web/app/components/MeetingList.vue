@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ActionListItem } from '~/composables/useActionList'
-import type { MeetingImportSnapshot } from '~/utils/tencentMeeting'
+import type { MeetingImportSnapshot, TencentMeetingListItem } from '~/utils/tencentMeeting'
 
 const props = defineProps<{ projectId: string }>()
 
@@ -86,6 +86,51 @@ function onImported(snapshot: MeetingImportSnapshot) {
 const createOpen = ref(false)
 const createBusy = ref(false)
 const createForm = reactive({ title: '', due_at: '', description: '' })
+
+// 新建会议时先从腾讯会议挑一场,选完再创建记录并导入
+const pickerOpen = ref(false)
+const creatingFromImport = ref(false)
+
+function startPickFromTencent() {
+  error.value = ''
+  createOpen.value = false
+  pickerOpen.value = true
+}
+
+async function importNewMeeting(meeting: TencentMeetingListItem) {
+  if (creatingFromImport.value) return
+  creatingFromImport.value = true
+  error.value = ''
+  importNotice.value = ''
+  const title = meeting.title?.trim() || '腾讯会议记录'
+  try {
+    const created = await api.post<{ id: string }>(`/projects/${projectId.value}/actions`, {
+      title,
+      kind: 'meeting',
+      priority: 'medium',
+      due_at: meeting.started_at ?? null,
+    })
+    try {
+      await api.post(`/projects/${projectId.value}/actions/${created.id}/meeting-import`, {
+        ...(meeting.meeting_id ? { meeting_id: meeting.meeting_id } : {}),
+        ...(meeting.meeting_code ? { meeting_code: meeting.meeting_code } : {}),
+        ...(meeting.sub_meeting_id ? { sub_meeting_id: meeting.sub_meeting_id } : {}),
+        ...(meeting.started_at ? { started_at: meeting.started_at } : {}),
+        ...(meeting.ended_at ? { ended_at: meeting.ended_at } : {}),
+      })
+    } catch (caught) {
+      // 记录已经建好,留在列表里重试导入,不把一个空记录丢给用户
+      await refresh()
+      error.value = `会议「${title}」已创建,但导入失败:${(caught as Error).message}。可以在列表里点「从腾讯会议导入」重试。`
+      return
+    }
+    await navigateTo(`/projects/${projectId.value}/meetings/${created.id}`)
+  } catch (caught) {
+    error.value = (caught as Error).message
+  } finally {
+    creatingFromImport.value = false
+  }
+}
 
 async function create() {
   if (createBusy.value) return
@@ -239,6 +284,25 @@ async function create() {
       <template #body>
         <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
         <div class="flex flex-col gap-4">
+          <div
+            class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-elevated/40 px-4 py-3 ring-1 ring-default"
+          >
+            <div class="min-w-0">
+              <p class="text-sm font-medium">会议已经开完了？</p>
+              <p class="mt-0.5 text-xs text-muted">
+                直接从腾讯会议导入纪要、参会人和逐字稿，不用手填。
+              </p>
+            </div>
+            <UButton
+              icon="i-lucide-download"
+              color="secondary"
+              variant="outline"
+              :disabled="createBusy"
+              @click="startPickFromTencent"
+            >
+              从腾讯会议导入
+            </UButton>
+          </div>
           <UFormField label="标题" required>
             <UInput v-model="createForm.title" class="w-full" placeholder="这场会议要讨论什么" />
           </UFormField>
@@ -258,6 +322,27 @@ async function create() {
       <template #footer>
         <UButton color="neutral" variant="ghost" @click="createOpen = false">取消</UButton>
         <UButton :loading="createBusy" @click="create">创建并记录</UButton>
+      </template>
+    </UModal>
+
+    <MeetingImportModal
+      v-model:open="pickerOpen"
+      mode="select"
+      :project-id="projectId"
+      @select="importNewMeeting"
+    />
+
+    <UModal
+      :open="creatingFromImport"
+      title="正在从腾讯会议导入"
+      :close="false"
+      :dismissible="false"
+    >
+      <template #body>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />
+          正在创建会议记录并读取会议内容，请稍候…
+        </div>
       </template>
     </UModal>
 

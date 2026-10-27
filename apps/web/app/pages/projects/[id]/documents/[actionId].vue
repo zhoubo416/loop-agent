@@ -1,60 +1,8 @@
 <script setup lang="ts">
-interface ExecutionItem {
-  id: string
-  status: string
-  executor_type: string
-  output: Record<string, unknown>
-  error: Record<string, unknown> | null
-  started_at: string
-  completed_at: string | null
-}
+import type { ActionDetailBase, ActionDocumentItem } from '~/utils/action'
 
-interface DocumentItem {
-  id: string
-  name: string
-  source: 'upload' | 'url'
-  mime_type: string | null
-  file_url: string | null
-  file_size: number | string | null
-  extracted_chars: number
-  parse_status: 'pending' | 'ok' | 'unsupported' | 'failed'
-  parse_error: string | null
-  created_at: string
-}
-
-interface ActionDetail {
-  id: string
-  title: string
-  description: string | null
-  status: string
-  priority: string
-  kind: string
-  executor_type: string
-  assignee_id: string | null
-  due_at: string | null
-  created_at: string
-  completed_at: string | null
-  documents: DocumentItem[]
-  executions: ExecutionItem[]
-  analysis: Array<{
-    id: string
-    status: string
-    created_at: string
-    judgment: string | null
-    recommendations: Array<{ id: string; type: string; content: string; priority: string; status: string }>
-    events: Array<{ id: string; type: string; title: string }>
-  }>
-  source: {
-    event: { id: string; type: string; title: string; content: string } | null
-    recommendation: { id: string; content: string } | null
-    run: {
-      id: string
-      trigger_type: string
-      created_at: string
-      judgment: string | null
-      observation: { id: string; type: string; content: string } | null
-    } | null
-  } | null
+interface DocumentDetail extends ActionDetailBase {
+  documents: ActionDocumentItem[]
 }
 
 const route = useRoute()
@@ -62,24 +10,95 @@ const api = useApi()
 const projectId = computed(() => route.params.id as string)
 const actionId = computed(() => route.params.actionId as string)
 
-const { data: action, refresh, pending } = await useAsyncData(
+const { data: action, refresh, pending, error: loadError } = await useAsyncData(
   () => `document-${actionId.value}`,
-  () => api.get<ActionDetail>(`/projects/${projectId.value}/actions/${actionId.value}`),
+  () => api.get<DocumentDetail>(`/projects/${projectId.value}/actions/${actionId.value}`),
 )
 
-const { busy, error, notice, complete, fail, cancel } = useActionLifecycle(
-  projectId,
-  actionId,
-  refresh,
+const {
+  busy,
+  error: lifecycleError,
+  notice,
+  complete,
+  fail,
+  cancel,
+} = useActionLifecycle(projectId, actionId, refresh, { confirmCancel: false })
+
+const {
+  pendingId,
+  error: opsError,
+  confirm,
+  decline,
+} = useActionOps(projectId, refresh)
+
+const organizeError = ref('')
+const pageError = computed(
+  () =>
+    loadError.value?.message || lifecycleError.value || opsError.value || organizeError.value,
 )
 
 const summary = ref('')
 const keyPoints = ref('')
 const content = ref('')
 const organizing = ref(false)
+const failOpen = ref(false)
+const cancelOpen = ref(false)
 
 const editable = computed(() => ['pending', 'running'].includes(action.value?.status ?? ''))
+const proposed = computed(() => action.value?.status === 'proposed')
+const documents = computed(() => action.value?.documents ?? [])
+const parsedCount = computed(
+  () => documents.value.filter((doc) => doc.parse_status === 'ok').length,
+)
+const totalChars = computed(() =>
+  documents.value.reduce((sum, doc) => sum + (doc.extracted_chars || 0), 0),
+)
 const chatHref = computed(() => `/projects/${projectId.value}/chat?doc=${actionId.value}`)
+
+const description = computed(() => {
+  const value = action.value?.description
+  return value && !isSameText(value, action.value?.title) ? value : null
+})
+
+const longDescription = computed(() => {
+  const value = description.value
+  return Boolean(value && (value.length > 80 || value.includes('\n')))
+})
+
+// 编辑中还没有文档时先落在文档标签,其余情况先看整理内容
+const tab = ref<'content' | 'documents'>(
+  ['pending', 'running'].includes(action.value?.status ?? '') && !documents.value.length
+    ? 'documents'
+    : 'content',
+)
+
+const tabs = computed(() => [
+  { label: '整理内容', value: 'content', icon: 'i-lucide-notebook-pen' },
+  {
+    label: '文档',
+    value: 'documents',
+    icon: 'i-lucide-files',
+    badge: documents.value.length || undefined,
+  },
+])
+
+const moreActions = computed(() => [
+  {
+    label: '标记失败',
+    icon: 'i-lucide-circle-x',
+    onSelect: () => {
+      failOpen.value = true
+    },
+  },
+  {
+    label: '取消整理',
+    icon: 'i-lucide-ban',
+    color: 'error' as const,
+    onSelect: () => {
+      cancelOpen.value = true
+    },
+  },
+])
 
 function lines(value: string): string[] {
   return value.split('\n').map((line) => line.trim()).filter(Boolean)
@@ -88,7 +107,7 @@ function lines(value: string): string[] {
 function submit() {
   void complete(
     { key_points: lines(keyPoints.value), content: content.value },
-    summary.value || '资料已整理',
+    summary.value.trim() || '资料已整理',
   )
 }
 
@@ -96,7 +115,7 @@ function submit() {
 async function organize() {
   if (organizing.value) return
   organizing.value = true
-  error.value = ''
+  organizeError.value = ''
   try {
     const draft = await api.post<{ summary: string; key_points: string[]; content: string }>(
       `/projects/${projectId.value}/actions/${actionId.value}/organize`,
@@ -105,115 +124,276 @@ async function organize() {
     summary.value = draft.summary
     keyPoints.value = draft.key_points.join('\n')
     content.value = draft.content
-    notice.value = 'AI 已整理出草稿,请检查修订后再提交。'
+    notice.value = 'AI 已整理出草稿，请检查修订后再提交。'
   } catch (caught) {
-    error.value = (caught as Error).message
+    organizeError.value = (caught as Error).message
   } finally {
     organizing.value = false
   }
 }
-
-function failWithReason() {
-  const reason = window.prompt('失败原因:')
-  if (reason) void fail(reason)
-}
 </script>
 
 <template>
-  <UContainer>
-    <UAlert v-if="error" color="error" variant="soft" :title="error" class="mb-4" />
-    <UAlert v-if="notice" color="info" variant="soft" :title="notice" class="mb-4" />
+  <div>
+    <ActionDetailLayout
+      kind="document"
+      :loading="pending && !action"
+      :title="action?.title"
+      :description="description"
+      :status="action?.status"
+      :priority="action?.priority"
+      :back-to="`/projects/${projectId}/documents`"
+      :created-at="action?.created_at"
+      :completed-at="action?.completed_at"
+      :error="pageError"
+      :notice="notice"
+    >
+      <template #meta>
+        <template v-if="action">
+          <span v-if="documents.length" class="inline-flex items-center gap-1.5">
+            <UIcon name="i-lucide-files" class="size-3.5" />
+            {{ documents.length }} 个文档
+          </span>
+          <span v-if="documents.length" class="inline-flex items-center gap-1.5">
+            <UIcon name="i-lucide-circle-check" class="size-3.5" />
+            {{ parsedCount }} 份已解析
+          </span>
+          <span v-if="totalChars" class="inline-flex items-center gap-1.5">
+            <UIcon name="i-lucide-text" class="size-3.5" />
+            共 {{ totalChars.toLocaleString('zh-CN') }} 字
+          </span>
+        </template>
+      </template>
 
-    <div v-if="pending && !action" class="flex flex-col gap-4">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <USkeleton class="h-7 w-72" />
-        <USkeleton class="h-6 w-48" />
-      </div>
-      <div class="grid gap-4 lg:grid-cols-3">
-        <USkeleton class="h-72 rounded-xl lg:col-span-2" />
-        <USkeleton class="h-56 rounded-xl" />
-      </div>
-    </div>
-
-    <template v-else-if="action">
-      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div class="min-w-0">
-          <h1 class="text-xl font-semibold">{{ action.title }}</h1>
-          <p v-if="action.description" class="mt-1 break-words whitespace-pre-wrap text-sm text-muted">
-            {{ action.description }}
-          </p>
-          <p class="mt-1 text-sm text-muted">
-            {{ formatDateTime(action.created_at) }} 创建 ·
-            {{ executorLabel(action.executor_type) }}执行
-            <template v-if="action.due_at"> · 截止 {{ formatDateTime(action.due_at) }}</template>
-          </p>
-        </div>
-        <div class="flex shrink-0 flex-wrap items-center gap-2">
-          <UBadge :color="kindColor(action.kind)" variant="soft">{{ kindLabel(action.kind) }}</UBadge>
-          <UBadge :color="priorityColor(action.priority)" variant="soft">{{ priorityLabel(action.priority) }}</UBadge>
-          <UBadge :color="statusColor(action.status)" variant="soft">{{ statusLabel(action.status) }}</UBadge>
-          <UButton :to="chatHref" icon="i-lucide-message-circle" color="neutral" variant="outline" size="xs">
+      <template #actions>
+        <template v-if="proposed">
+          <UButton
+            color="error"
+            variant="ghost"
+            :disabled="pendingId !== null"
+            @click="decline(actionId)"
+          >
+            拒绝
+          </UButton>
+          <UButton
+            :loading="pendingId === actionId"
+            :disabled="pendingId !== null"
+            @click="confirm(actionId)"
+          >
+            确认整理
+          </UButton>
+        </template>
+        <template v-else>
+          <UButton
+            v-if="documents.length"
+            :to="chatHref"
+            icon="i-lucide-message-circle"
+            size="sm"
+            color="neutral"
+            variant="ghost"
+          >
             去对话
           </UButton>
-        </div>
-      </div>
+          <UButton
+            v-if="editable"
+            icon="i-lucide-files"
+            size="sm"
+            color="neutral"
+            variant="outline"
+            @click="tab = 'documents'"
+          >
+            管理文档
+          </UButton>
+        </template>
+      </template>
 
-      <div class="grid gap-4 lg:grid-cols-3">
-        <ActionSource :source="action.source" />
+      <template #main>
+        <template v-if="action">
+          <div class="flex flex-col gap-4">
+            <UTabs v-model="tab" :items="tabs" variant="link" :content="false" />
 
-        <ActionDocuments
-          :project-id="projectId"
-          :action-id="actionId"
-          :documents="action.documents ?? []"
-          :editable="editable"
-          @refresh="refresh()"
-        />
-
-        <UCard class="lg:col-span-2">
-          <template #header>
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="font-medium">{{ action.status === 'completed' ? '整理结果' : '资料内容' }}</span>
-              <UButton
-                v-if="editable"
-                icon="i-lucide-sparkles"
-                size="xs"
-                color="secondary"
-                variant="outline"
-                :loading="organizing"
-                @click="organize()"
+            <template v-if="tab === 'content'">
+              <ActionPanel
+                v-if="description && longDescription"
+                title="资料说明"
+                icon="i-lucide-align-left"
               >
-                AI 整理
-              </UButton>
-            </div>
-          </template>
+                <p class="break-words whitespace-pre-wrap text-sm leading-7 text-default">
+                  {{ description }}
+                </p>
+              </ActionPanel>
 
-          <div v-if="editable" class="flex flex-col gap-3">
-            <UFormField label="结论" help="一句话概括这份资料说明了什么,AI 整理会自动填充,可手工修订">
-              <UTextarea v-model="summary" :rows="2" class="w-full" placeholder="一句话概括这份资料" />
-            </UFormField>
-            <UFormField label="要点" help="每行一条">
-              <UTextarea v-model="keyPoints" :rows="3" class="w-full" />
-            </UFormField>
-            <UFormField label="内容">
-              <UTextarea v-model="content" :rows="6" class="w-full" />
-            </UFormField>
-            <div class="flex flex-wrap gap-2">
-              <UButton :loading="busy" @click="submit">完成并交给智能体</UButton>
-              <UButton color="warning" variant="outline" :disabled="busy" @click="failWithReason">失败</UButton>
-              <UButton color="error" variant="ghost" :disabled="busy" @click="cancel()">取消</UButton>
-            </div>
+              <ActionPanel
+                v-if="proposed"
+                title="等待确认"
+                icon="i-lucide-clock"
+                description="这是智能体提议的资料整理，确认后才进入整理阶段。"
+              >
+                <p class="text-sm leading-relaxed text-muted">
+                  确认后可以上传文档、导入链接并整理内容；拒绝后这条记录不会再出现在整理中的列表里。
+                </p>
+              </ActionPanel>
+
+              <ActionPanel
+                v-else-if="editable"
+                title="整理内容"
+                icon="i-lucide-notebook-pen"
+                description="把资料整理成结论、要点和正文，完成后交给智能体。"
+              >
+                <template #actions>
+                  <UButton
+                    icon="i-lucide-sparkles"
+                    size="xs"
+                    color="secondary"
+                    variant="outline"
+                    :loading="organizing"
+                    :disabled="busy"
+                    @click="organize()"
+                  >
+                    AI 整理
+                  </UButton>
+                </template>
+
+                <div class="flex flex-col gap-5">
+                  <UFormField label="结论" help="一句话概括这份资料说明了什么">
+                    <UTextarea
+                      v-model="summary"
+                      :rows="3"
+                      :maxrows="6"
+                      autoresize
+                      class="w-full"
+                      placeholder="一句话概括这份资料，AI 整理会自动填充"
+                    />
+                  </UFormField>
+                  <UFormField label="要点" help="每行一条">
+                    <UTextarea
+                      v-model="keyPoints"
+                      :rows="4"
+                      :maxrows="10"
+                      autoresize
+                      class="w-full"
+                      placeholder="这份资料最重要的几条结论"
+                    />
+                  </UFormField>
+                  <UFormField label="内容">
+                    <UTextarea
+                      v-model="content"
+                      :rows="8"
+                      :maxrows="20"
+                      autoresize
+                      class="w-full"
+                      placeholder="整理后的正文，AI 整理会自动填充"
+                    />
+                  </UFormField>
+                </div>
+
+                <template #footer>
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <UDropdownMenu :items="moreActions">
+                      <UButton
+                        color="neutral"
+                        variant="ghost"
+                        trailing-icon="i-lucide-chevron-down"
+                        :disabled="busy"
+                      >
+                        更多
+                      </UButton>
+                    </UDropdownMenu>
+                    <UButton :loading="busy" @click="submit">完成并交给智能体</UButton>
+                  </div>
+                </template>
+              </ActionPanel>
+
+              <ActionPanel
+                v-else
+                :title="action.status === 'completed' ? '整理结果' : '资料状态'"
+                icon="i-lucide-clipboard-check"
+              >
+                <ActionResult
+                  :status="action.status"
+                  kind="document"
+                  :executions="action.executions"
+                  summary-label="结论"
+                />
+              </ActionPanel>
+            </template>
+
+            <ActionDocuments
+              v-else
+              :project-id="projectId"
+              :action-id="actionId"
+              :documents="documents"
+              :editable="editable"
+              @refresh="refresh()"
+            />
           </div>
-          <ActionResult
-            v-else
-            :status="action.status"
-            :kind="action.kind"
-            :executions="action.executions"
-          />
-        </UCard>
+        </template>
+      </template>
 
-        <ExecutionList :executions="action.executions" compact />
-        <ActionAnalysis :analysis="action.analysis" />
-      </div>
-    </template>
-  </UContainer>
+      <template #rail>
+        <ActionContextRail
+          v-if="action"
+          :analysis="action.analysis"
+          :executions="action.executions"
+          :source="action.source"
+          :title="action.title"
+          :description="action.description"
+          details-title="资料信息"
+          source-heading="为什么整理这份资料"
+          source-hint="智能体当时看到的内容，以及它决定创建这份资料的原因。"
+        >
+          <template #details>
+            <ActionProperty label="状态">
+              <UBadge :color="statusColor(action.status)" variant="soft">
+                {{ statusLabel(action.status) }}
+              </UBadge>
+            </ActionProperty>
+            <ActionProperty label="优先级">
+              <span class="inline-flex items-center gap-1">
+                <UIcon name="i-lucide-flag" class="size-3.5" />
+                {{ priorityLabel(action.priority) }}
+              </span>
+            </ActionProperty>
+            <ActionProperty v-if="documents.length" label="文档数">
+              {{ documents.length }} 个
+            </ActionProperty>
+            <ActionProperty v-if="documents.length" label="已解析">
+              {{ parsedCount }} 份
+            </ActionProperty>
+            <ActionProperty v-if="totalChars" label="总字数">
+              {{ totalChars.toLocaleString('zh-CN') }} 字
+            </ActionProperty>
+            <ActionProperty label="执行者">{{ executorLabel(action.executor_type) }}</ActionProperty>
+            <ActionProperty label="创建时间">{{ formatDateTime(action.created_at) }}</ActionProperty>
+            <ActionProperty v-if="action.completed_at" label="完成时间">
+              {{ formatDateTime(action.completed_at) }}
+            </ActionProperty>
+          </template>
+        </ActionContextRail>
+      </template>
+    </ActionDetailLayout>
+
+    <ActionReasonModal
+      v-model:open="failOpen"
+      title="标记整理失败"
+      description="失败原因会交给智能体，它会据此调整下一步。"
+      placeholder="比如:资料无法解析，内容不足以整理"
+      confirm-label="标记失败"
+      confirm-color="warning"
+      :busy="busy"
+      @confirm="(reason) => fail(reason)"
+    />
+
+    <ActionReasonModal
+      v-model:open="cancelOpen"
+      title="取消整理"
+      description="取消原因可留空。取消后这条记录不会再出现在整理中的列表里，智能体也会收到通知。"
+      placeholder="比如:这份资料已经不再需要整理"
+      confirm-label="取消整理"
+      confirm-color="error"
+      :require-reason="false"
+      :busy="busy"
+      @confirm="(reason) => cancel(reason || undefined)"
+    />
+  </div>
 </template>

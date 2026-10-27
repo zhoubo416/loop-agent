@@ -183,7 +183,10 @@ async function create() {
           </div>
         </div>
 
-        <p v-if="action.description" class="mt-1 line-clamp-2 break-words text-sm text-muted">
+        <p
+          v-if="action.description && !isSameText(action.description, action.title)"
+          class="mt-1 line-clamp-2 break-words text-sm text-muted"
+        >
           {{ action.description }}
         </p>
 
