@@ -193,6 +193,44 @@ function submit() {
 
       <template #main>
         <template v-if="action">
+          <ActionDetails title="任务信息">
+            <ActionProperty label="状态">
+              <UBadge :color="statusColor(action.status)" variant="soft">
+                {{ statusLabel(action.status) }}
+              </UBadge>
+            </ActionProperty>
+            <ActionProperty label="优先级">
+              <span class="inline-flex items-center gap-1">
+                <UIcon name="i-lucide-flag" class="size-3.5" />
+                {{ priorityLabel(action.priority) }}
+              </span>
+            </ActionProperty>
+            <ActionProperty label="负责人">
+              <div v-if="editable" class="flex justify-end">
+                <USelect
+                  :model-value="action.assignee_id ?? ''"
+                  :items="userOptions"
+                  size="xs"
+                  placeholder="未指派"
+                  class="w-36"
+                  :loading="pendingId === actionId"
+                  :disabled="pendingId !== null"
+                  @update:model-value="(value: string) => assign(actionId, value)"
+                />
+              </div>
+              <span v-else>{{ assigneeName }}</span>
+            </ActionProperty>
+            <ActionProperty v-if="action.due_at" label="截止时间">
+              <span :class="overdue ? 'text-error' : ''">{{ formatDateTime(action.due_at) }}</span>
+              <span v-if="dueHint" class="ml-1 text-xs text-muted">· {{ dueHint }}</span>
+            </ActionProperty>
+            <ActionProperty label="执行者">{{ executorLabel(action.executor_type) }}</ActionProperty>
+            <ActionProperty label="创建时间">{{ formatDateTime(action.created_at) }}</ActionProperty>
+            <ActionProperty v-if="action.completed_at" label="完成时间">
+              {{ formatDateTime(action.completed_at) }}
+            </ActionProperty>
+          </ActionDetails>
+
           <ActionPanel
             v-if="description && longDescription"
             title="任务说明"
@@ -295,48 +333,9 @@ function submit() {
           :source="action.source"
           :title="action.title"
           :description="action.description"
-          details-title="任务信息"
           source-heading="为什么有这个任务"
           source-hint="智能体当时看到的内容，以及它决定提出这个任务的原因。"
-        >
-          <template #details>
-            <ActionProperty label="状态">
-              <UBadge :color="statusColor(action.status)" variant="soft">
-                {{ statusLabel(action.status) }}
-              </UBadge>
-            </ActionProperty>
-            <ActionProperty label="优先级">
-              <span class="inline-flex items-center gap-1">
-                <UIcon name="i-lucide-flag" class="size-3.5" />
-                {{ priorityLabel(action.priority) }}
-              </span>
-            </ActionProperty>
-            <ActionProperty label="负责人">
-              <div v-if="editable" class="flex justify-end">
-                <USelect
-                  :model-value="action.assignee_id ?? ''"
-                  :items="userOptions"
-                  size="xs"
-                  placeholder="未指派"
-                  class="w-36"
-                  :loading="pendingId === actionId"
-                  :disabled="pendingId !== null"
-                  @update:model-value="(value: string) => assign(actionId, value)"
-                />
-              </div>
-              <span v-else>{{ assigneeName }}</span>
-            </ActionProperty>
-            <ActionProperty v-if="action.due_at" label="截止时间">
-              <span :class="overdue ? 'text-error' : ''">{{ formatDateTime(action.due_at) }}</span>
-              <span v-if="dueHint" class="ml-1 text-xs text-muted">· {{ dueHint }}</span>
-            </ActionProperty>
-            <ActionProperty label="执行者">{{ executorLabel(action.executor_type) }}</ActionProperty>
-            <ActionProperty label="创建时间">{{ formatDateTime(action.created_at) }}</ActionProperty>
-            <ActionProperty v-if="action.completed_at" label="完成时间">
-              {{ formatDateTime(action.completed_at) }}
-            </ActionProperty>
-          </template>
-        </ActionContextRail>
+        />
       </template>
     </ActionDetailLayout>
 

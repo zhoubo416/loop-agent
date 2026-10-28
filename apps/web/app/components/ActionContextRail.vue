@@ -10,16 +10,12 @@ const props = withDefaults(
     description?: string | null
     sourceHeading?: string
     sourceHint?: string | null
-    detailsTitle?: string
-    participants?: string[]
   }>(),
   {
     title: null,
     description: null,
     sourceHeading: '来源',
     sourceHint: null,
-    detailsTitle: '详情',
-    participants: () => [],
   },
 )
 
@@ -30,68 +26,34 @@ const hasSource = computed(() =>
   Boolean(sourceContent.value.trigger || sourceContent.value.judgment),
 )
 const sortedAnalysis = computed(() => [...props.analysis].reverse())
-const participantList = computed(() =>
-  Array.from(new Set(props.participants.map((name) => name.trim()).filter(Boolean))),
-)
 
-const historyOpen = ref(false)
 const sourceOpen = ref(false)
-
-function initial(name: string): string {
-  return name.trim().slice(0, 1)
-}
 </script>
 
 <template>
   <div class="flex flex-col gap-4">
-    <ActionPanel :title="detailsTitle" icon="i-lucide-info" compact>
-      <dl class="flex flex-col divide-y divide-default">
-        <slot name="details" />
-      </dl>
-    </ActionPanel>
-
-    <ActionPanel v-if="participantList.length" title="参会人" icon="i-lucide-users" compact>
-      <div class="flex flex-wrap gap-1.5">
-        <span
-          v-for="name in participantList"
-          :key="name"
-          class="inline-flex items-center gap-1.5 rounded-full bg-elevated px-2 py-1 text-xs text-default"
-        >
-          <UAvatar :text="initial(name)" :alt="name" size="3xs" />
-          {{ name }}
-        </span>
-      </div>
-    </ActionPanel>
+    <div class="flex items-center gap-2">
+      <span class="flex items-center gap-1.5 text-xs font-medium text-muted">
+        <UIcon name="i-lucide-sparkles" class="size-3.5" />
+        智能体
+      </span>
+      <span class="h-px flex-1 bg-default" />
+    </div>
 
     <ActionPanel
-      v-if="analysis.length"
       title="智能体分析"
       icon="i-lucide-sparkles"
       description="结果交给智能体后，它据此做出的判断、记录的事件和建议。"
       compact
     >
-      <ActionAnalysis :analysis="sortedAnalysis" />
+      <ActionAnalysis v-if="analysis.length" :analysis="sortedAnalysis" />
+      <p v-else class="text-sm leading-relaxed text-muted">
+        还没有分析。这个行动的结果交给智能体后，它的判断、事件和建议会出现在这里。
+      </p>
     </ActionPanel>
 
-    <ActionPanel v-if="executions.length" compact>
-      <UCollapsible v-model:open="historyOpen">
-        <UButton color="neutral" variant="ghost" block class="justify-between px-0">
-          <span class="flex items-center gap-2 text-sm font-semibold text-highlighted">
-            <UIcon name="i-lucide-history" class="size-4 text-muted" />
-            执行记录
-            <span class="text-xs font-normal text-muted">{{ executions.length }} 次</span>
-          </span>
-          <UIcon
-            :name="historyOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
-            class="size-4 text-muted"
-          />
-        </UButton>
-        <template #content>
-          <div class="pt-3">
-            <ExecutionList :executions="executions" />
-          </div>
-        </template>
-      </UCollapsible>
+    <ActionPanel title="执行记录" icon="i-lucide-history" compact>
+      <ExecutionList :executions="executions" />
     </ActionPanel>
 
     <ActionPanel v-if="hasSource" compact>

@@ -210,6 +210,38 @@ async function organize() {
       <template #main>
         <template v-if="action">
           <div class="flex flex-col gap-4">
+            <ActionDetails title="资料信息">
+              <ActionProperty label="状态">
+                <UBadge :color="statusColor(action.status)" variant="soft">
+                  {{ statusLabel(action.status) }}
+                </UBadge>
+              </ActionProperty>
+              <ActionProperty label="优先级">
+                <span class="inline-flex items-center gap-1">
+                  <UIcon name="i-lucide-flag" class="size-3.5" />
+                  {{ priorityLabel(action.priority) }}
+                </span>
+              </ActionProperty>
+              <ActionProperty v-if="documents.length" label="文档数">
+                {{ documents.length }} 个
+              </ActionProperty>
+              <ActionProperty v-if="documents.length" label="已解析">
+                {{ parsedCount }} 份
+              </ActionProperty>
+              <ActionProperty v-if="totalChars" label="总字数">
+                {{ totalChars.toLocaleString('zh-CN') }} 字
+              </ActionProperty>
+              <ActionProperty label="执行者">
+                {{ executorLabel(action.executor_type) }}
+              </ActionProperty>
+              <ActionProperty label="创建时间">
+                {{ formatDateTime(action.created_at) }}
+              </ActionProperty>
+              <ActionProperty v-if="action.completed_at" label="完成时间">
+                {{ formatDateTime(action.completed_at) }}
+              </ActionProperty>
+            </ActionDetails>
+
             <UTabs v-model="tab" :items="tabs" variant="link" :content="false" />
 
             <template v-if="tab === 'content'">
@@ -338,38 +370,9 @@ async function organize() {
           :source="action.source"
           :title="action.title"
           :description="action.description"
-          details-title="资料信息"
           source-heading="为什么整理这份资料"
           source-hint="智能体当时看到的内容，以及它决定创建这份资料的原因。"
-        >
-          <template #details>
-            <ActionProperty label="状态">
-              <UBadge :color="statusColor(action.status)" variant="soft">
-                {{ statusLabel(action.status) }}
-              </UBadge>
-            </ActionProperty>
-            <ActionProperty label="优先级">
-              <span class="inline-flex items-center gap-1">
-                <UIcon name="i-lucide-flag" class="size-3.5" />
-                {{ priorityLabel(action.priority) }}
-              </span>
-            </ActionProperty>
-            <ActionProperty v-if="documents.length" label="文档数">
-              {{ documents.length }} 个
-            </ActionProperty>
-            <ActionProperty v-if="documents.length" label="已解析">
-              {{ parsedCount }} 份
-            </ActionProperty>
-            <ActionProperty v-if="totalChars" label="总字数">
-              {{ totalChars.toLocaleString('zh-CN') }} 字
-            </ActionProperty>
-            <ActionProperty label="执行者">{{ executorLabel(action.executor_type) }}</ActionProperty>
-            <ActionProperty label="创建时间">{{ formatDateTime(action.created_at) }}</ActionProperty>
-            <ActionProperty v-if="action.completed_at" label="完成时间">
-              {{ formatDateTime(action.completed_at) }}
-            </ActionProperty>
-          </template>
-        </ActionContextRail>
+        />
       </template>
     </ActionDetailLayout>
 
